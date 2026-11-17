@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "auto-bill",
+  "main": "src/index.tsx",
+  "compatibility_date": "2026-11-01",
+  // The UI must only be reachable through Cloudflare Access on a custom domain.
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "bills.tamasjozsa.net", "custom_domain": true }],
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "auto-bill",
+      "database_id": "376e79bb-2436-46a6-af53-d20ede674840",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "auto-bill-files" }],
+  // Workers AI always runs remotely, also in `wrangler dev`.
+  "ai": { "binding": "AI", "remote": true },
+  // 06:00 UTC on the 10th of every month: create draft statements.
+  "triggers": { "crons": ["0 6 10 * *"] },
+  "vars": {
+    "ADMIN_EMAILS": "jtomi92@gmail.com",
+    "ALLOWED_SENDERS": "jtomi92@gmail.com,jozsakarolyne61@gmail.com",
+    "ACCESS_TEAM_DOMAIN": "tamasjozsa.cloudflareaccess.com",
+    "ACCESS_AUD": "d607498321e1c3b6cfd737a83a0a215aab718ff668e2af2c918319719f0f5e30",
+    "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+  }
+}
