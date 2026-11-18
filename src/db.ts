@@ -134,13 +134,14 @@ export type LineRow = LineItem & {
   bill_proof: string | null;
   bill_paid_at: string | null;
   bill_due_date: string | null;
+  bill_utility: string | null;
 };
 
 export const linesOfStatement = (db: D1Database, statementId: number) =>
   all<LineRow>(
     db,
     `SELECT li.*, b.pdf_key AS bill_pdf, b.proof_key AS bill_proof, b.paid_at AS bill_paid_at,
-            b.due_date AS bill_due_date
+            b.due_date AS bill_due_date, b.utility_type AS bill_utility
      FROM line_items li LEFT JOIN bills b ON b.id = li.bill_id
      WHERE li.statement_id = ?
      ORDER BY CASE li.kind WHEN 'rent' THEN 0 WHEN 'condo_fee' THEN 1 WHEN 'utility' THEN 2 ELSE 3 END, li.id`,

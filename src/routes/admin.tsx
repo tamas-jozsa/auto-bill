@@ -29,7 +29,7 @@ import {
   type AppEnv,
   type User,
 } from '../types';
-import { Layout, Money, Options, PostButton } from '../ui/layout';
+import { Avatar, Empty, Icon, KindIcon, Layout, Money, monthLabel, Options, PostButton, TableWrap } from '../ui/layout';
 import { currentMonth, isMonth, normalizeContract, nullIfEmpty, parseList } from '../util';
 import { adminBills, BillTable } from './admin-bills';
 import { field, flash, form, intParam, notFound, redirect, type Ctx } from './common';
@@ -51,54 +51,125 @@ admin.get('/', async (c) => {
     first<{ n: number }>(db, "SELECT count(*) AS n FROM bills WHERE location_id IS NULL AND status = 'pending_review'"),
     listUsers(db),
   ]);
-  const unbilled = await first<{ n: number }>(
-    db,
-    "SELECT count(*) AS n FROM bills b WHERE status = 'approved' AND NOT EXISTS (SELECT 1 FROM line_items li WHERE li.bill_id = b.id)",
-  );
+  const [unbilled, awaiting] = await Promise.all([
+    first<{ n: number }>(
+      db,
+      "SELECT count(*) AS n FROM bills b WHERE status = 'approved' AND NOT EXISTS (SELECT 1 FROM line_items li WHERE li.bill_id = b.id)",
+    ),
+    first<{ n: number }>(db, "SELECT count(*) AS n FROM statements WHERE status = 'sent'"),
+  ]);
+  const me = c.get('user');
+  const tenants = users.filter((u) => u.role === 'tenant' && !u.banned);
   return c.html(
-    <Layout title="Áttekintés" user={c.get('user')} flash={flash(c)}>
-      <h1>Áttekintés</h1>
+    <Layout title="Áttekintés" user={me} flash={flash(c)}>
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">
+            <Icon name="sparkle" size={14} /> {me.name ? `Szia, ${me.name.split(/\s+/)[0]}!` : 'Szia!'} · {monthLabel(currentMonth())}
+          </div>
+          <h1>Áttekintés</h1>
+        </div>
+        <div class="actions" style="margin:0">
+          <a class="btn" href="/admin/bills/new">
+            <Icon name="upload" size={16} /> PDF feltöltése
+          </a>
+          <a class="btn primary" href="/admin/bills?status=pending_review">
+            <Icon name="inbox" size={16} /> Számlák ellenőrzése
+          </a>
+        </div>
+      </div>
+      <div class="stats">
+        <a class={`stat warn${pending > 0 ? ' attn' : ''}`} href="/admin/bills?status=pending_review">
+          <span class="ico">
+            <Icon name="inbox" size={22} />
+          </span>
+          <span>
+            <div class="lbl">Ellenőrzésre vár</div>
+            <div class="val">{pending}</div>
+            {((unassigned?.n ?? 0) > 0 || duplicates > 0) && (
+              <div class="muted">
+                {[(unassigned?.n ?? 0) > 0 && `${unassigned?.n} ismeretlen`, duplicates > 0 && `${duplicates} duplikált`].filter(Boolean).join(' · ')}
+              </div>
+            )}
+          </span>
+        </a>
+        <a class="stat info" href="/admin/bills?status=approved">
+          <span class="ico">
+            <Icon name="receipt" size={22} />
+          </span>
+          <span>
+            <div class="lbl">Elszámolásra vár</div>
+            <div class="val">{unbilled?.n ?? 0}</div>
+          </span>
+        </a>
+        <div class="stat">
+          <span class="ico">
+            <Icon name="send" size={22} />
+          </span>
+          <span>
+            <div class="lbl">Kiküldve, fizetésre vár</div>
+            <div class="val">{awaiting?.n ?? 0}</div>
+          </span>
+        </div>
+        <a class="stat ok" href="/admin/users">
+          <span class="ico">
+            <Icon name="users" size={22} />
+          </span>
+          <span>
+            <div class="lbl">Ingatlan · bérlő</div>
+            <div class="val">
+              {locations.length} · {tenants.length}
+            </div>
+          </span>
+        </a>
+      </div>
       <div class="grid">
         <div class="card">
-          <div class="muted">Ellenőrzésre vár</div>
-          <div class="total">{pending}</div>
-          {(unassigned?.n ?? 0) > 0 && <div class="muted">{unassigned?.n} ismeretlen azonosítóval</div>}
-          {duplicates > 0 && <div class="muted">{duplicates} duplikált</div>}
-          <div class="actions">
-            <a class="btn primary" href="/admin/bills?status=pending_review">
-              Számlák ellenőrzése
-            </a>
-            <a class="btn" href="/admin/bills/new">
-              PDF feltöltése
-            </a>
-          </div>
-        </div>
-        <div class="card">
-          <div class="muted">Jóváhagyva, még nincs elszámolásban</div>
-          <div class="total">{unbilled?.n ?? 0}</div>
+          <h2>
+            <Icon name="calendar" /> Havi elszámolás
+          </h2>
+          <p class="muted">Létrehozza vagy frissíti a piszkozatokat minden ingatlanra, a jóváhagyott számlákkal és az ismétlődő tételekkel.</p>
           <form method="post" action="/admin/statements" class="row">
             <div>
-              <label>Elszámolások létrehozása / frissítése erre a hónapra</label>
+              <label>Hónap</label>
               <input type="month" name="month" value={currentMonth()} required />
             </div>
             <div class="shrink">
-              <button class="primary">Létrehozás minden ingatlanra</button>
+              <button class="primary">
+                <Icon name="sparkle" size={16} /> Létrehozás minden ingatlanra
+              </button>
             </div>
           </form>
         </div>
+        <ViewAsForm tenants={tenants} />
       </div>
-      <ViewAsForm tenants={users.filter((u) => u.role === 'tenant' && !u.banned)} />
       <h2>Ingatlanok</h2>
       {locations.length === 0 ? (
-        <p>
-          Még nincs ingatlan. <a href="/admin/locations">Hozzon létre egyet</a>.
-        </p>
+        <div class="card">
+          <Empty icon="building" title="Még nincs ingatlan">
+            <p>
+              <a href="/admin/locations">Hozzon létre egyet</a> a kezdéshez.
+            </p>
+          </Empty>
+        </div>
       ) : (
-        <div class="grid">
+        <div class="st-list">
           {locations.map((l) => (
-            <a class="card" href={`/admin/locations/${l.id}`} style="text-decoration:none;color:inherit">
-              <b>{l.name}</b>
-              <div class="muted">{l.address ?? ''}</div>
+            <a class="st-card" href={`/admin/locations/${l.id}`}>
+              <div class="top">
+                <KindIcon kind="rent" />
+                <span class="tag">{l.currency}</span>
+              </div>
+              <div>
+                <div class="m">{l.name}</div>
+                <div class="muted">{l.address ?? '\u00a0'}</div>
+              </div>
+              <div class="foot">
+                <span></span>
+                <span class="go">
+                  Megnyitás <Icon name="arrowRight" size={14} />
+                </span>
+              </div>
             </a>
           ))}
         </div>
@@ -112,7 +183,9 @@ admin.get('/', async (c) => {
 function ViewAsForm(p: { tenants: User[] }) {
   return (
     <div class="card">
-      <h2 style="margin-top:0">Bérlői nézet</h2>
+      <h2>
+        <Icon name="eye" /> Bérlői nézet
+      </h2>
       <p class="muted">Pontosan azt látja, amit a kiválasztott bérlő. Az előnézet csak olvasható; a felső sávban léphet vissza.</p>
       {p.tenants.length === 0 ? (
         <p class="muted">
@@ -233,6 +306,7 @@ admin.get('/locations', async (c) => {
   return c.html(
     <Layout title="Ingatlanok" user={c.get('user')} flash={flash(c)}>
       <h1>Ingatlanok</h1>
+      <TableWrap>
       <table>
         <thead>
           <tr>
@@ -245,16 +319,24 @@ admin.get('/locations', async (c) => {
           {locations.map((l) => (
             <tr>
               <td>
-                <a href={`/admin/locations/${l.id}`}>{l.name}</a>
+                <div class="cell">
+                  <KindIcon kind="rent" small />
+                  <a href={`/admin/locations/${l.id}`}>
+                    <b>{l.name}</b>
+                  </a>
+                </div>
               </td>
               <td>{l.address ?? ''}</td>
-              <td>{l.currency}</td>
+              <td>
+                <span class="tag">{l.currency}</span>
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
+      </TableWrap>
       <form method="post" action="/admin/locations" class="card" style="margin-top:16px">
-        <h2 style="margin-top:0">Új ingatlan</h2>
+        <h2>Új ingatlan</h2>
         <LocationFields />
         <div class="actions">
           <button class="primary">Létrehozás</button>
@@ -321,11 +403,26 @@ admin.get('/locations/:id', async (c) => {
 
   return c.html(
     <Layout title={location.name} user={c.get('user')} flash={flash(c)}>
-      <h1>{location.name}</h1>
+      <a class="back" href="/admin/locations">
+        <Icon name="arrowLeft" size={16} /> Ingatlanok
+      </a>
+      <div class="page-head">
+        <div style="display:flex;gap:14px;align-items:center">
+          <KindIcon kind="rent" large />
+          <div>
+            <div class="eyebrow">
+              <Icon name="mapPin" size={14} /> {location.address ?? 'Ingatlan'} · {location.currency}
+            </div>
+            <h1>{location.name}</h1>
+          </div>
+        </div>
+      </div>
 
       <div class="grid">
         <div class="card">
-          <h2 style="margin-top:0">Elszámolások</h2>
+          <h2>
+            <Icon name="calendar" /> Elszámolások
+          </h2>
           <form method="post" action={`${base}/statements`} class="row">
             <div>
               <label>Hónap</label>
@@ -341,15 +438,25 @@ admin.get('/locations/:id', async (c) => {
         </div>
 
         <div class="card">
-          <h2 style="margin-top:0">Ismétlődő tételek</h2>
+          <h2>
+            <Icon name="refresh" /> Ismétlődő tételek
+          </h2>
           <p class="muted">Minden új elszámolásba automatikusan bekerülnek.</p>
           <table>
             <tbody>
               {recurring.map((r) => (
                 <tr>
                   <td>
-                    {r.description}
-                    <div class="muted">{LINE_KIND_LABELS[r.kind]}{r.active ? '' : ' · szüneteltetve'}</div>
+                    <div class="cell">
+                      <KindIcon kind={r.kind} small />
+                      <div>
+                        {r.description}
+                        <div class="muted">
+                          {LINE_KIND_LABELS[r.kind]}
+                          {r.active ? '' : ' · szüneteltetve'}
+                        </div>
+                      </div>
+                    </div>
                   </td>
                   <td class="num">
                     <Money amount={r.amount} currency={location.currency} />
@@ -384,16 +491,23 @@ admin.get('/locations/:id', async (c) => {
         </div>
 
         <div class="card">
-          <h2 style="margin-top:0">Azonosítók</h2>
+          <h2>
+            <Icon name="file" /> Azonosítók
+          </h2>
           <p class="muted">Az ingatlanhoz tartozó számla-azonosítók (pl. felhasználó azonosító száma).</p>
           <table>
             <tbody>
               {contracts.map((ct) => (
                 <tr>
                   <td>
+                    <div class="cell">
+                      <KindIcon kind={ct.utility_type ?? 'other'} small />
+                      <div>
                     <code>{ct.contract_number}</code>
                     <div class="muted">
                       {[ct.utility_type ? UTILITY_LABELS[ct.utility_type] : null, ct.provider, ct.note].filter(Boolean).join(' · ')}
+                    </div>
+                      </div>
                     </div>
                   </td>
                   <td>
@@ -425,16 +539,23 @@ admin.get('/locations/:id', async (c) => {
         </div>
 
         <div class="card">
-          <h2 style="margin-top:0">Bérlők</h2>
+          <h2>
+            <Icon name="users" /> Bérlők
+          </h2>
           <table>
             <tbody>
               {tenants.map((t) => (
                 <tr>
                   <td>
-                    {t.name ?? t.email}
-                    <div class="muted">
-                      {t.email}
-                      {t.banned ? ' · kitiltva' : ''}
+                    <div class="cell">
+                      <Avatar user={t} />
+                      <div>
+                        {t.name ?? t.email}
+                        <div class="muted">
+                          {t.email}
+                          {t.banned ? ' · kitiltva' : ''}
+                        </div>
+                      </div>
                     </div>
                   </td>
                   <td>
@@ -472,7 +593,7 @@ admin.get('/locations/:id', async (c) => {
       <BillTable bills={bills} />
 
       <form method="post" action={base} class="card" style="margin-top:16px">
-        <h2 style="margin-top:0">Ingatlan szerkesztése</h2>
+        <h2>Ingatlan szerkesztése</h2>
         <LocationFields name={location.name} address={location.address} currency={location.currency} />
         <div class="actions">
           <button>Mentés</button>
@@ -594,6 +715,7 @@ admin.get('/users', async (c) => {
   return c.html(
     <Layout title="Felhasználók" user={me} flash={flash(c)}>
       <h1>Felhasználók</h1>
+      <TableWrap>
       <table>
         <thead>
           <tr>
@@ -609,8 +731,13 @@ admin.get('/users', async (c) => {
             return (
               <tr>
                 <td>
-                  {u.name ?? u.email}
-                  <div class="muted">{u.email}</div>
+                  <div class="cell">
+                    <Avatar user={u} />
+                    <div>
+                      <b>{u.name ?? u.email}</b>
+                      <div class="muted">{u.email}</div>
+                    </div>
+                  </div>
                 </td>
                 <td>
                   {ROLE_LABELS[u.role]} {u.banned ? <span class="badge rejected">kitiltva</span> : null}
@@ -656,9 +783,12 @@ admin.get('/users', async (c) => {
           })}
         </tbody>
       </table>
+      </TableWrap>
 
       <form method="post" action="/admin/users" class="card" style="margin-top:16px">
-        <h2 style="margin-top:0">Felhasználó meghívása</h2>
+        <h2>
+          <Icon name="send" /> Felhasználó meghívása
+        </h2>
         <p class="muted">
           Az e-mail-címükkel jelentkeznek be ezen az oldalon (egyszer használatos kóddal). Csak meghívott, nem kitiltott címek léphetnek be.
         </p>

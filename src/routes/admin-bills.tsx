@@ -4,7 +4,7 @@ import { ingestPdf, reextractBill } from '../intake';
 import { minorToInput, parseAmount } from '../money';
 import { syncBillLine } from '../statements';
 import { BILL_STATUSES, STATUS_LABELS, UTILITY_LABELS, UTILITY_TYPES, type AppEnv, type Bill } from '../types';
-import { Badge, Layout, Money, Options, PostButton } from '../ui/layout';
+import { Badge, Empty, Icon, KindIcon, Layout, Money, monthLabel, Options, PostButton, TableWrap } from '../ui/layout';
 import { isDate, normalizeContract, nullIfEmpty } from '../util';
 import { field, file, flash, form, intParam, notFound, redirect } from './common';
 
@@ -24,25 +24,35 @@ adminBills.get('/', async (c) => {
   const bills = await listBills(c.env.DB, { status: valid && status !== 'all' ? status : undefined });
   return c.html(
     <Layout title="Számlák" user={c.get('user')} flash={flash(c)}>
-      <h1>Számlák</h1>
-      <div class="actions" style="margin-bottom:16px">
+      <div class="page-head">
+        <h1>Számlák</h1>
+        <a class="btn primary" href="/admin/bills/new">
+          <Icon name="upload" size={16} /> PDF feltöltése
+        </a>
+      </div>
+      <nav class="seg" style="margin-bottom:18px">
         {[...BILL_STATUSES, 'all'].map((s) => (
-          <a class={`btn ${s === status ? 'primary' : ''}`} href={`/admin/bills?status=${s}`}>
+          <a href={`/admin/bills?status=${s}`} aria-current={s === status ? 'page' : undefined}>
             {s === 'all' ? 'Összes' : STATUS_LABELS[s]}
           </a>
         ))}
-        <a class="btn" href="/admin/bills/new" style="margin-left:auto">
-          PDF feltöltése
-        </a>
-      </div>
+      </nav>
       <BillTable bills={bills} />
     </Layout>,
   );
 });
 
 export function BillTable(p: { bills: (Bill & { location_name: string | null; statement_id: number | null; statement_month: string | null })[] }) {
-  if (p.bills.length === 0) return <p class="muted">Nincs itt semmi.</p>;
+  if (p.bills.length === 0)
+    return (
+      <div class="card">
+        <Empty icon="checkCircle" title="Nincs itt semmi">
+          <p>Minden rendben, ebben a listában nincs számla.</p>
+        </Empty>
+      </div>
+    );
   return (
+    <TableWrap>
     <table>
       <thead>
         <tr>
@@ -60,14 +70,21 @@ export function BillTable(p: { bills: (Bill & { location_name: string | null; st
         {p.bills.map((b) => (
           <tr>
             <td>
-              <a href={`/admin/bills/${b.id}`}>{b.id}</a>
+              <a href={`/admin/bills/${b.id}`}>
+                <b>#{b.id}</b>
+              </a>
             </td>
             <td>
               <Badge status={b.status} />
             </td>
             <td>
-              {UTILITY_LABELS[b.utility_type]}
-              <div class="muted">{b.provider ?? b.email_subject ?? ''}</div>
+              <div class="cell">
+                <KindIcon kind={b.utility_type} small />
+                <div>
+                  {UTILITY_LABELS[b.utility_type]}
+                  <div class="muted">{b.provider ?? b.email_subject ?? ''}</div>
+                </div>
+              </div>
             </td>
             <td>{b.location_name ?? <span class="badge rejected">nincs hozzárendelve</span>}</td>
             <td>{b.contract_number ?? '—'}</td>
@@ -75,23 +92,35 @@ export function BillTable(p: { bills: (Bill & { location_name: string | null; st
             <td class="num">
               <Money amount={b.amount} currency={b.currency} />
             </td>
-            <td>{b.statement_id ? <a href={`/statements/${b.statement_id}`}>{b.statement_month}</a> : '—'}</td>
+            <td>{b.statement_id ? <a href={`/statements/${b.statement_id}`}>{b.statement_month && monthLabel(b.statement_month)}</a> : '—'}</td>
           </tr>
         ))}
       </tbody>
     </table>
+    </TableWrap>
   );
 }
 
 adminBills.get('/new', (c) =>
   c.html(
     <Layout title="Számla feltöltése" user={c.get('user')} flash={flash(c)}>
+      <a class="back" href="/admin/bills">
+        <Icon name="arrowLeft" size={16} /> Számlák
+      </a>
       <h1>Számla PDF feltöltése</h1>
-      <form method="post" action="/admin/bills" enctype="multipart/form-data" class="card">
-        <p class="muted">A PDF ugyanúgy feldolgozásra kerül, mint az e-mailben érkező számlák, és az ellenőrzési sorba kerül.</p>
+      <form method="post" action="/admin/bills" enctype="multipart/form-data" class="card" style="max-width:640px">
+        <div class="empty" style="padding:12px 0 18px">
+          <div class="ico">
+            <Icon name="upload" size={28} />
+          </div>
+          <b>PDF kiválasztása</b>
+          <p>A PDF ugyanúgy feldolgozásra kerül, mint az e-mailben érkező számlák, és az ellenőrzési sorba kerül.</p>
+        </div>
         <input type="file" name="file" accept="application/pdf" required />
         <div class="actions">
-          <button class="primary">Feltöltés és feldolgozás</button>
+          <button class="primary">
+            <Icon name="sparkle" size={16} /> Feltöltés és feldolgozás
+          </button>
         </div>
       </form>
     </Layout>,
@@ -125,14 +154,31 @@ adminBills.get('/:id', async (c) => {
 
   return c.html(
     <Layout title={`Számla ${bill.id}`} user={c.get('user')} flash={flash(c)}>
-      <h1>
-        Számla #{bill.id} <Badge status={bill.status} />
-      </h1>
+      <a class="back" href="/admin/bills">
+        <Icon name="arrowLeft" size={16} /> Számlák
+      </a>
+      <div class="page-head">
+        <div style="display:flex;gap:14px;align-items:center">
+          <KindIcon kind={bill.utility_type} large />
+          <div>
+            <div class="eyebrow">
+              {UTILITY_LABELS[bill.utility_type]}
+              {bill.provider ? ` · ${bill.provider}` : ''}
+            </div>
+            <h1>
+              Számla #{bill.id} <Badge status={bill.status} />
+            </h1>
+          </div>
+        </div>
+        <div class="total">
+          <Money amount={bill.amount} currency={bill.currency} />
+        </div>
+      </div>
       <div class="split">
         <div>
           {statement && (
             <div class="flash ok">
-              Elszámolás: <a href={`/statements/${statement.id}`}>{statement.month}</a> ({STATUS_LABELS[statement.status]})
+              Elszámolás: <a href={`/statements/${statement.id}`}>{monthLabel(statement.month)}</a> ({STATUS_LABELS[statement.status]})
               {statement.status !== 'draft' && ' — az itteni módosítások már nem változtatják meg.'}
             </div>
           )}
