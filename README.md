@@ -32,6 +32,8 @@ npm run dev
 ```
 
 - Open http://localhost:8787. Send `x-dev-email: tenant@example.com` to act as another user.
+- `npm run dev` passes `--local-upstream localhost`; without it the custom-domain route makes
+  requests look like `bills.tamasjozsa.net` and the localhost-only dev login is refused.
 - Simulate an incoming bill:
   `curl -X POST 'localhost:8787/cdn-cgi/handler/email?from=you@example.com&to=bills@tamasjozsa.net' --data-binary @bill.eml`
   (the sender must be in `ALLOWED_SENDERS`).

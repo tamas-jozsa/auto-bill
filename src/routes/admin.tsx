@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { setCookie } from 'hono/cookie';
+import { VIEW_AS_COOKIE } from '../auth';
 import {
   contractsOfLocation,
   countBills,
@@ -20,9 +22,12 @@ import { ensureStatement, pullBills } from '../statements';
 import {
   LINE_KIND_LABELS,
   RECURRING_KINDS,
+  ROLE_LABELS,
+  STATUS_LABELS,
   UTILITY_LABELS,
   UTILITY_TYPES,
   type AppEnv,
+  type User,
 } from '../types';
 import { Layout, Money, Options, PostButton } from '../ui/layout';
 import { currentMonth, isMonth, normalizeContract, nullIfEmpty, parseList } from '../util';
@@ -38,53 +43,55 @@ admin.route('/bills', adminBills);
 
 admin.get('/', async (c) => {
   const db = c.env.DB;
-  const [pending, duplicates, locations, statements, unassigned] = await Promise.all([
+  const [pending, duplicates, locations, statements, unassigned, users] = await Promise.all([
     countBills(db, 'pending_review'),
     countBills(db, 'duplicate'),
     listLocations(db),
     listRecentStatements(db, 12),
     first<{ n: number }>(db, "SELECT count(*) AS n FROM bills WHERE location_id IS NULL AND status = 'pending_review'"),
+    listUsers(db),
   ]);
   const unbilled = await first<{ n: number }>(
     db,
     "SELECT count(*) AS n FROM bills b WHERE status = 'approved' AND NOT EXISTS (SELECT 1 FROM line_items li WHERE li.bill_id = b.id)",
   );
   return c.html(
-    <Layout title="Dashboard" user={c.get('user')} flash={flash(c)}>
-      <h1>Dashboard</h1>
+    <Layout title="Áttekintés" user={c.get('user')} flash={flash(c)}>
+      <h1>Áttekintés</h1>
       <div class="grid">
         <div class="card">
-          <div class="muted">Waiting for review</div>
+          <div class="muted">Ellenőrzésre vár</div>
           <div class="total">{pending}</div>
-          {(unassigned?.n ?? 0) > 0 && <div class="muted">{unassigned?.n} with unknown contract number</div>}
-          {duplicates > 0 && <div class="muted">{duplicates} duplicates</div>}
+          {(unassigned?.n ?? 0) > 0 && <div class="muted">{unassigned?.n} ismeretlen azonosítóval</div>}
+          {duplicates > 0 && <div class="muted">{duplicates} duplikált</div>}
           <div class="actions">
             <a class="btn primary" href="/admin/bills?status=pending_review">
-              Review bills
+              Számlák ellenőrzése
             </a>
             <a class="btn" href="/admin/bills/new">
-              Upload PDF
+              PDF feltöltése
             </a>
           </div>
         </div>
         <div class="card">
-          <div class="muted">Approved, not on a statement yet</div>
+          <div class="muted">Jóváhagyva, még nincs elszámolásban</div>
           <div class="total">{unbilled?.n ?? 0}</div>
           <form method="post" action="/admin/statements" class="row">
             <div>
-              <label>Create / refresh statements for month</label>
+              <label>Elszámolások létrehozása / frissítése erre a hónapra</label>
               <input type="month" name="month" value={currentMonth()} required />
             </div>
             <div class="shrink">
-              <button class="primary">Create for all locations</button>
+              <button class="primary">Létrehozás minden ingatlanra</button>
             </div>
           </form>
         </div>
       </div>
-      <h2>Locations</h2>
+      <ViewAsForm tenants={users.filter((u) => u.role === 'tenant' && !u.banned)} />
+      <h2>Ingatlanok</h2>
       {locations.length === 0 ? (
         <p>
-          No locations yet. <a href="/admin/locations">Create one</a>.
+          Még nincs ingatlan. <a href="/admin/locations">Hozzon létre egyet</a>.
         </p>
       ) : (
         <div class="grid">
@@ -96,10 +103,47 @@ admin.get('/', async (c) => {
           ))}
         </div>
       )}
-      <h2>Recent statements</h2>
+      <h2>Legutóbbi elszámolások</h2>
       <StatementTable rows={statements} showLocation />
     </Layout>,
   );
+});
+
+function ViewAsForm(p: { tenants: User[] }) {
+  return (
+    <div class="card">
+      <h2 style="margin-top:0">Bérlői nézet</h2>
+      <p class="muted">Pontosan azt látja, amit a kiválasztott bérlő. Az előnézet csak olvasható; a felső sávban léphet vissza.</p>
+      {p.tenants.length === 0 ? (
+        <p class="muted">
+          Még nincs bérlő. <a href="/admin/users">Hívjon meg egyet.</a>
+        </p>
+      ) : (
+        <form method="post" action="/admin/view-as" class="row">
+          <div>
+            <label>Bérlő</label>
+            <select name="user_id">
+              {p.tenants.map((u) => (
+                <option value={String(u.id)}>{u.name ? `${u.name} (${u.email})` : u.email}</option>
+              ))}
+            </select>
+          </div>
+          <div class="shrink">
+            <button class="primary">Megtekintés bérlőként</button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
+admin.post('/view-as', async (c) => {
+  const id = Number(field(await form(c), 'user_id'));
+  const target = id ? await getUser(c.env.DB, id) : null;
+  if (!target || target.role !== 'tenant' || target.banned)
+    return redirect(c, '/admin', { err: 'Csak aktív bérlő nézete tekinthető meg' });
+  setCookie(c, VIEW_AS_COOKIE, String(target.id), { path: '/', httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 8 * 3600 });
+  return redirect(c, '/', { ok: `Bérlői nézet: ${target.email}` });
 });
 
 // --- statements --------------------------------------------------------------
@@ -107,11 +151,11 @@ admin.get('/', async (c) => {
 admin.post('/statements', async (c) => {
   const f = await form(c);
   const month = field(f, 'month');
-  if (!isMonth(month)) return redirect(c, '/admin', { err: 'Invalid month' });
+  if (!isMonth(month)) return redirect(c, '/admin', { err: 'Érvénytelen hónap' });
   const locations = await listLocations(c.env.DB);
   let created = 0;
   for (const l of locations) if ((await ensureStatement(c.env.DB, l.id, month)).created) created++;
-  return redirect(c, '/admin', { ok: `${created} new statement(s) for ${month}; existing drafts refreshed.` });
+  return redirect(c, '/admin', { ok: `${created} új elszámolás (${month}); a meglévő piszkozatok frissítve.` });
 });
 
 async function loadStatement(c: Ctx) {
@@ -122,24 +166,24 @@ async function loadStatement(c: Ctx) {
 admin.post('/statements/:id/refresh', async (c) => {
   const st = await loadStatement(c);
   if (!st) return notFound(c);
-  if (st.status !== 'draft') return redirect(c, `/statements/${st.id}`, { err: 'Only drafts can be changed' });
+  if (st.status !== 'draft') return redirect(c, `/statements/${st.id}`, { err: 'Csak piszkozat módosítható' });
   const n = await pullBills(c.env.DB, st.id);
-  return redirect(c, `/statements/${st.id}`, { ok: n ? `Added ${n} bill(s)` : 'No new approved bills' });
+  return redirect(c, `/statements/${st.id}`, { ok: n ? `${n} számla hozzáadva` : 'Nincs új jóváhagyott számla' });
 });
 
 admin.post('/statements/:id/lines', async (c) => {
   const st = await loadStatement(c);
   if (!st) return notFound(c);
   const back = `/statements/${st.id}`;
-  if (st.status !== 'draft') return redirect(c, back, { err: 'Only drafts can be changed' });
+  if (st.status !== 'draft') return redirect(c, back, { err: 'Csak piszkozat módosítható' });
   const f = await form(c);
   const kind = field(f, 'kind');
-  if (!['adjustment', 'rent', 'condo_fee'].includes(kind)) return redirect(c, back, { err: 'Invalid type' });
+  if (!['adjustment', 'rent', 'condo_fee'].includes(kind)) return redirect(c, back, { err: 'Érvénytelen típus' });
   const description = field(f, 'description').slice(0, 300);
   const amount = parseAmount(field(f, 'amount'));
-  if (!description || amount == null) return redirect(c, back, { err: 'Description and a valid amount are required' });
+  if (!description || amount == null) return redirect(c, back, { err: 'Leírás és érvényes összeg szükséges' });
   await run(c.env.DB, 'INSERT INTO line_items (statement_id, kind, description, amount) VALUES (?, ?, ?, ?)', st.id, kind, description, amount);
-  return redirect(c, back, { ok: `${LINE_KIND_LABELS[kind as 'adjustment']} added` });
+  return redirect(c, back, { ok: `${LINE_KIND_LABELS[kind as 'adjustment']} hozzáadva` });
 });
 
 admin.post('/lines/:id/delete', async (c) => {
@@ -152,9 +196,9 @@ admin.post('/lines/:id/delete', async (c) => {
       )
     : null;
   if (!line) return notFound(c);
-  if (line.status !== 'draft') return redirect(c, `/statements/${line.statement_id}`, { err: 'Only drafts can be changed' });
+  if (line.status !== 'draft') return redirect(c, `/statements/${line.statement_id}`, { err: 'Csak piszkozat módosítható' });
   await run(c.env.DB, 'DELETE FROM line_items WHERE id = ?', line.id);
-  return redirect(c, `/statements/${line.statement_id}`, { ok: 'Line removed (a removed bill will be offered again on the next statement)' });
+  return redirect(c, `/statements/${line.statement_id}`, { ok: 'Tétel törölve (az eltávolított számla a következő elszámolásba újra bekerülhet)' });
 });
 
 admin.post('/statements/:id/status', async (c) => {
@@ -163,7 +207,7 @@ admin.post('/statements/:id/status', async (c) => {
   const f = await form(c);
   const to = field(f, 'status');
   const allowed: Record<string, string[]> = { draft: ['sent'], sent: ['paid', 'draft'], paid: ['draft'] };
-  if (!allowed[st.status]?.includes(to)) return redirect(c, `/statements/${st.id}`, { err: `Can't go from ${st.status} to ${to}` });
+  if (!allowed[st.status]?.includes(to)) return redirect(c, `/statements/${st.id}`, { err: 'Érvénytelen állapotváltás' });
   const sql =
     to === 'sent'
       ? "UPDATE statements SET status = 'sent', sent_at = datetime('now') WHERE id = ?"
@@ -171,15 +215,15 @@ admin.post('/statements/:id/status', async (c) => {
         ? "UPDATE statements SET status = 'paid', paid_at = datetime('now') WHERE id = ?"
         : "UPDATE statements SET status = 'draft', sent_at = NULL, paid_at = NULL WHERE id = ?";
   await run(c.env.DB, sql, st.id);
-  return redirect(c, `/statements/${st.id}`, { ok: `Statement marked as ${to}` });
+  return redirect(c, `/statements/${st.id}`, { ok: `Elszámolás állapota: ${STATUS_LABELS[to] ?? to}` });
 });
 
 admin.post('/statements/:id/delete', async (c) => {
   const st = await loadStatement(c);
   if (!st) return notFound(c);
-  if (st.status !== 'draft') return redirect(c, `/statements/${st.id}`, { err: 'Only drafts can be deleted' });
+  if (st.status !== 'draft') return redirect(c, `/statements/${st.id}`, { err: 'Csak piszkozat törölhető' });
   await run(c.env.DB, 'DELETE FROM statements WHERE id = ?', st.id);
-  return redirect(c, `/admin/locations/${st.location_id}`, { ok: `Draft ${st.month} deleted` });
+  return redirect(c, `/admin/locations/${st.location_id}`, { ok: `${st.month} piszkozat törölve` });
 });
 
 // --- locations ---------------------------------------------------------------
@@ -187,14 +231,14 @@ admin.post('/statements/:id/delete', async (c) => {
 admin.get('/locations', async (c) => {
   const locations = await listLocations(c.env.DB);
   return c.html(
-    <Layout title="Locations" user={c.get('user')} flash={flash(c)}>
-      <h1>Locations</h1>
+    <Layout title="Ingatlanok" user={c.get('user')} flash={flash(c)}>
+      <h1>Ingatlanok</h1>
       <table>
         <thead>
           <tr>
-            <th>Name</th>
-            <th>Address</th>
-            <th>Currency</th>
+            <th>Név</th>
+            <th>Cím</th>
+            <th>Pénznem</th>
           </tr>
         </thead>
         <tbody>
@@ -210,10 +254,10 @@ admin.get('/locations', async (c) => {
         </tbody>
       </table>
       <form method="post" action="/admin/locations" class="card" style="margin-top:16px">
-        <h2 style="margin-top:0">New location</h2>
+        <h2 style="margin-top:0">Új ingatlan</h2>
         <LocationFields />
         <div class="actions">
-          <button class="primary">Create</button>
+          <button class="primary">Létrehozás</button>
         </div>
       </form>
     </Layout>,
@@ -224,15 +268,15 @@ function LocationFields(p: { name?: string; address?: string | null; currency?: 
   return (
     <div class="row">
       <div>
-        <label>Name</label>
-        <input name="name" required value={p.name ?? ''} placeholder="Lisbon flat" />
+        <label>Név</label>
+        <input name="name" required value={p.name ?? ''} placeholder="pl. Lisszaboni lakás" />
       </div>
       <div style="flex:2">
-        <label>Address</label>
+        <label>Cím</label>
         <input name="address" value={p.address ?? ''} />
       </div>
       <div class="shrink" style="width:110px">
-        <label>Currency</label>
+        <label>Pénznem</label>
         <input name="currency" required maxlength={3} value={p.currency ?? 'EUR'} />
       </div>
     </div>
@@ -248,7 +292,7 @@ function parseLocationForm(f: Awaited<ReturnType<typeof form>>) {
 
 admin.post('/locations', async (c) => {
   const v = parseLocationForm(await form(c));
-  if (!v) return redirect(c, '/admin/locations', { err: 'Name and a 3-letter currency are required' });
+  if (!v) return redirect(c, '/admin/locations', { err: 'Név és 3 betűs pénznem szükséges' });
   const row = await first<{ id: number }>(
     c.env.DB,
     'INSERT INTO locations (name, address, currency) VALUES (?, ?, ?) RETURNING id',
@@ -256,7 +300,7 @@ admin.post('/locations', async (c) => {
     v.address,
     v.currency,
   );
-  return redirect(c, `/admin/locations/${row!.id}`, { ok: 'Location created' });
+  return redirect(c, `/admin/locations/${row!.id}`, { ok: 'Ingatlan létrehozva' });
 });
 
 admin.get('/locations/:id', async (c) => {
@@ -281,14 +325,14 @@ admin.get('/locations/:id', async (c) => {
 
       <div class="grid">
         <div class="card">
-          <h2 style="margin-top:0">Statements</h2>
+          <h2 style="margin-top:0">Elszámolások</h2>
           <form method="post" action={`${base}/statements`} class="row">
             <div>
-              <label>Month</label>
+              <label>Hónap</label>
               <input type="month" name="month" value={currentMonth()} required />
             </div>
             <div class="shrink">
-              <button class="primary">Create / refresh</button>
+              <button class="primary">Létrehozás / frissítés</button>
             </div>
           </form>
           <div style="margin-top:12px">
@@ -297,22 +341,22 @@ admin.get('/locations/:id', async (c) => {
         </div>
 
         <div class="card">
-          <h2 style="margin-top:0">Recurring items</h2>
-          <p class="muted">Copied into every new statement.</p>
+          <h2 style="margin-top:0">Ismétlődő tételek</h2>
+          <p class="muted">Minden új elszámolásba automatikusan bekerülnek.</p>
           <table>
             <tbody>
               {recurring.map((r) => (
                 <tr>
                   <td>
                     {r.description}
-                    <div class="muted">{LINE_KIND_LABELS[r.kind]}{r.active ? '' : ' · paused'}</div>
+                    <div class="muted">{LINE_KIND_LABELS[r.kind]}{r.active ? '' : ' · szüneteltetve'}</div>
                   </td>
                   <td class="num">
                     <Money amount={r.amount} currency={location.currency} />
                   </td>
                   <td>
-                    <PostButton action={`/admin/recurring/${r.id}/toggle`} label={r.active ? 'pause' : 'resume'} cls="link" />{' '}
-                    <PostButton action={`/admin/recurring/${r.id}/delete`} label="delete" cls="link" confirm="Delete this recurring item?" />
+                    <PostButton action={`/admin/recurring/${r.id}/toggle`} label={r.active ? 'szüneteltetés' : 'folytatás'} cls="link" />{' '}
+                    <PostButton action={`/admin/recurring/${r.id}/delete`} label="törlés" cls="link" confirm="Törli ezt az ismétlődő tételt?" />
                   </td>
                 </tr>
               ))}
@@ -320,28 +364,28 @@ admin.get('/locations/:id', async (c) => {
           </table>
           <form method="post" action={`${base}/recurring`} class="row">
             <div class="shrink">
-              <label>Type</label>
+              <label>Típus</label>
               <select name="kind">
                 <Options values={RECURRING_KINDS} labels={LINE_KIND_LABELS} />
               </select>
             </div>
             <div style="flex:2">
-              <label>Description</label>
-              <input name="description" required placeholder="Monthly rent" />
+              <label>Leírás</label>
+              <input name="description" required placeholder="Havi bérleti díj" />
             </div>
             <div>
-              <label>Amount</label>
+              <label>Összeg</label>
               <input name="amount" required placeholder="850.00" />
             </div>
             <div class="shrink">
-              <button>Add</button>
+              <button>Hozzáadás</button>
             </div>
           </form>
         </div>
 
         <div class="card">
-          <h2 style="margin-top:0">Contract numbers</h2>
-          <p class="muted">Bill identity numbers that belong to this location.</p>
+          <h2 style="margin-top:0">Azonosítók</h2>
+          <p class="muted">Az ingatlanhoz tartozó számla-azonosítók (pl. felhasználó azonosító száma).</p>
           <table>
             <tbody>
               {contracts.map((ct) => (
@@ -353,7 +397,7 @@ admin.get('/locations/:id', async (c) => {
                     </div>
                   </td>
                   <td>
-                    <PostButton action={`/admin/contracts/${ct.id}/delete`} label="delete" cls="link" confirm="Delete this contract number?" />
+                    <PostButton action={`/admin/contracts/${ct.id}/delete`} label="törlés" cls="link" confirm="Törli ezt az azonosítót?" />
                   </td>
                 </tr>
               ))}
@@ -361,27 +405,27 @@ admin.get('/locations/:id', async (c) => {
           </table>
           <form method="post" action={`${base}/contracts`} class="row">
             <div>
-              <label>Number</label>
+              <label>Azonosító</label>
               <input name="contract_number" required />
             </div>
             <div class="shrink">
-              <label>Type</label>
+              <label>Típus</label>
               <select name="utility_type">
                 <Options values={UTILITY_TYPES} labels={UTILITY_LABELS} />
               </select>
             </div>
             <div>
-              <label>Provider</label>
+              <label>Szolgáltató</label>
               <input name="provider" />
             </div>
             <div class="shrink">
-              <button>Add</button>
+              <button>Hozzáadás</button>
             </div>
           </form>
         </div>
 
         <div class="card">
-          <h2 style="margin-top:0">Tenants</h2>
+          <h2 style="margin-top:0">Bérlők</h2>
           <table>
             <tbody>
               {tenants.map((t) => (
@@ -390,11 +434,11 @@ admin.get('/locations/:id', async (c) => {
                     {t.name ?? t.email}
                     <div class="muted">
                       {t.email}
-                      {t.banned ? ' · banned' : ''}
+                      {t.banned ? ' · kitiltva' : ''}
                     </div>
                   </td>
                   <td>
-                    <PostButton action={`${base}/tenants/${t.id}/delete`} label="remove" cls="link" />
+                    <PostButton action={`${base}/tenants/${t.id}/delete`} label="eltávolítás" cls="link" />
                   </td>
                 </tr>
               ))}
@@ -403,35 +447,35 @@ admin.get('/locations/:id', async (c) => {
           {candidates.length > 0 ? (
             <form method="post" action={`${base}/tenants`} class="row">
               <div>
-                <label>Assign user</label>
+                <label>Felhasználó hozzárendelése</label>
                 <select name="user_id">
                   {candidates.map((u) => (
                     <option value={String(u.id)}>
-                      {u.email} ({u.role})
+                      {u.email} ({ROLE_LABELS[u.role]})
                     </option>
                   ))}
                 </select>
               </div>
               <div class="shrink">
-                <button>Assign</button>
+                <button>Hozzárendelés</button>
               </div>
             </form>
           ) : (
             <p class="muted">
-              <a href="/admin/users">Invite a user</a> first.
+              Előbb <a href="/admin/users">hívjon meg egy felhasználót</a>.
             </p>
           )}
         </div>
       </div>
 
-      <h2>Bills</h2>
+      <h2>Számlák</h2>
       <BillTable bills={bills} />
 
       <form method="post" action={base} class="card" style="margin-top:16px">
-        <h2 style="margin-top:0">Edit location</h2>
+        <h2 style="margin-top:0">Ingatlan szerkesztése</h2>
         <LocationFields name={location.name} address={location.address} currency={location.currency} />
         <div class="actions">
-          <button>Save</button>
+          <button>Mentés</button>
         </div>
       </form>
     </Layout>,
@@ -442,9 +486,9 @@ admin.post('/locations/:id', async (c) => {
   const id = intParam(c, 'id');
   if (!id) return notFound(c);
   const v = parseLocationForm(await form(c));
-  if (!v) return redirect(c, `/admin/locations/${id}`, { err: 'Name and a 3-letter currency are required' });
+  if (!v) return redirect(c, `/admin/locations/${id}`, { err: 'Név és 3 betűs pénznem szükséges' });
   await run(c.env.DB, 'UPDATE locations SET name = ?, address = ?, currency = ? WHERE id = ?', v.name, v.address, v.currency, id);
-  return redirect(c, `/admin/locations/${id}`, { ok: 'Saved' });
+  return redirect(c, `/admin/locations/${id}`, { ok: 'Mentve' });
 });
 
 admin.post('/locations/:id/statements', async (c) => {
@@ -452,9 +496,9 @@ admin.post('/locations/:id/statements', async (c) => {
   const location = id ? await getLocation(c.env.DB, id) : null;
   if (!location) return notFound(c);
   const month = field(await form(c), 'month');
-  if (!isMonth(month)) return redirect(c, `/admin/locations/${location.id}`, { err: 'Invalid month' });
+  if (!isMonth(month)) return redirect(c, `/admin/locations/${location.id}`, { err: 'Érvénytelen hónap' });
   const st = await ensureStatement(c.env.DB, location.id, month);
-  return redirect(c, `/statements/${st.id}`, { ok: st.created ? 'Draft created' : 'Statement already existed; draft refreshed' });
+  return redirect(c, `/statements/${st.id}`, { ok: st.created ? 'Piszkozat létrehozva' : 'Az elszámolás már létezett' });
 });
 
 admin.post('/locations/:id/recurring', async (c) => {
@@ -465,9 +509,9 @@ admin.post('/locations/:id/recurring', async (c) => {
   const description = field(f, 'description').slice(0, 300);
   const amount = parseAmount(field(f, 'amount'));
   if (!(RECURRING_KINDS as readonly string[]).includes(kind) || !description || amount == null)
-    return redirect(c, `/admin/locations/${id}`, { err: 'Type, description and a valid amount are required' });
+    return redirect(c, `/admin/locations/${id}`, { err: 'Típus, leírás és érvényes összeg szükséges' });
   await run(c.env.DB, 'INSERT INTO recurring_items (location_id, kind, description, amount) VALUES (?, ?, ?, ?)', id, kind, description, amount);
-  return redirect(c, `/admin/locations/${id}`, { ok: `Added ${description} (${minorToInput(amount)})` });
+  return redirect(c, `/admin/locations/${id}`, { ok: `Hozzáadva: ${description} (${minorToInput(amount)})` });
 });
 
 admin.post('/recurring/:id/:op{toggle|delete}', async (c) => {
@@ -476,7 +520,7 @@ admin.post('/recurring/:id/:op{toggle|delete}', async (c) => {
   if (!item) return notFound(c);
   if (c.req.param('op') === 'delete') await run(c.env.DB, 'DELETE FROM recurring_items WHERE id = ?', id);
   else await run(c.env.DB, 'UPDATE recurring_items SET active = 1 - active WHERE id = ?', id);
-  return redirect(c, `/admin/locations/${item.location_id}`, { ok: 'Updated' });
+  return redirect(c, `/admin/locations/${item.location_id}`, { ok: 'Frissítve' });
 });
 
 admin.post('/locations/:id/contracts', async (c) => {
@@ -484,10 +528,10 @@ admin.post('/locations/:id/contracts', async (c) => {
   if (!id) return notFound(c);
   const f = await form(c);
   const number = normalizeContract(field(f, 'contract_number'));
-  if (!number) return redirect(c, `/admin/locations/${id}`, { err: 'Contract number is required' });
+  if (!number) return redirect(c, `/admin/locations/${id}`, { err: 'Az azonosító megadása kötelező' });
   const type = (UTILITY_TYPES as readonly string[]).includes(field(f, 'utility_type')) ? field(f, 'utility_type') : null;
   const existing = await first<{ location_id: number }>(c.env.DB, 'SELECT location_id FROM contracts WHERE contract_number = ?', number);
-  if (existing && existing.location_id !== id) return redirect(c, `/admin/locations/${id}`, { err: `${number} already belongs to another location` });
+  if (existing && existing.location_id !== id) return redirect(c, `/admin/locations/${id}`, { err: `${number} már egy másik ingatlanhoz tartozik` });
   await run(
     c.env.DB,
     `INSERT INTO contracts (contract_number, location_id, utility_type, provider) VALUES (?, ?, ?, ?)
@@ -505,7 +549,7 @@ admin.post('/locations/:id/contracts', async (c) => {
     number,
   );
   const n = res.meta.changes ?? 0;
-  return redirect(c, `/admin/locations/${id}`, { ok: `Contract ${number} added${n ? `; ${n} waiting bill(s) assigned` : ''}` });
+  return redirect(c, `/admin/locations/${id}`, { ok: `${number} azonosító hozzáadva${n ? `; ${n} várakozó számla hozzárendelve` : ''}` });
 });
 
 admin.post('/contracts/:id/delete', async (c) => {
@@ -513,7 +557,7 @@ admin.post('/contracts/:id/delete', async (c) => {
   const ct = id ? await first<{ location_id: number }>(c.env.DB, 'SELECT location_id FROM contracts WHERE id = ?', id) : null;
   if (!ct) return notFound(c);
   await run(c.env.DB, 'DELETE FROM contracts WHERE id = ?', id);
-  return redirect(c, `/admin/locations/${ct.location_id}`, { ok: 'Contract number deleted' });
+  return redirect(c, `/admin/locations/${ct.location_id}`, { ok: 'Azonosító törölve' });
 });
 
 admin.post('/locations/:id/tenants', async (c) => {
@@ -521,9 +565,9 @@ admin.post('/locations/:id/tenants', async (c) => {
   if (!id) return notFound(c);
   const userId = Number(field(await form(c), 'user_id'));
   const user = userId ? await getUser(c.env.DB, userId) : null;
-  if (!user) return redirect(c, `/admin/locations/${id}`, { err: 'Unknown user' });
+  if (!user) return redirect(c, `/admin/locations/${id}`, { err: 'Ismeretlen felhasználó' });
   await run(c.env.DB, 'INSERT INTO location_users (location_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING', id, user.id);
-  return redirect(c, `/admin/locations/${id}`, { ok: `${user.email} assigned` });
+  return redirect(c, `/admin/locations/${id}`, { ok: `${user.email} hozzárendelve` });
 });
 
 admin.post('/locations/:id/tenants/:uid/delete', async (c) => {
@@ -531,7 +575,7 @@ admin.post('/locations/:id/tenants/:uid/delete', async (c) => {
   const uid = intParam(c, 'uid');
   if (!id || !uid) return notFound(c);
   await run(c.env.DB, 'DELETE FROM location_users WHERE location_id = ? AND user_id = ?', id, uid);
-  return redirect(c, `/admin/locations/${id}`, { ok: 'Tenant removed from location' });
+  return redirect(c, `/admin/locations/${id}`, { ok: 'Bérlő eltávolítva az ingatlanról' });
 });
 
 // --- users -------------------------------------------------------------------
@@ -548,14 +592,14 @@ admin.get('/users', async (c) => {
   const bootstrap = parseList(c.env.ADMIN_EMAILS);
   const me = c.get('user');
   return c.html(
-    <Layout title="Users" user={me} flash={flash(c)}>
-      <h1>Users</h1>
+    <Layout title="Felhasználók" user={me} flash={flash(c)}>
+      <h1>Felhasználók</h1>
       <table>
         <thead>
           <tr>
-            <th>User</th>
-            <th>Role</th>
-            <th>Locations</th>
+            <th>Felhasználó</th>
+            <th>Szerepkör</th>
+            <th>Ingatlanok</th>
             <th></th>
           </tr>
         </thead>
@@ -569,7 +613,7 @@ admin.get('/users', async (c) => {
                   <div class="muted">{u.email}</div>
                 </td>
                 <td>
-                  {u.role} {u.banned ? <span class="badge rejected">banned</span> : null}
+                  {ROLE_LABELS[u.role]} {u.banned ? <span class="badge rejected">kitiltva</span> : null}
                 </td>
                 <td>
                   {links.results
@@ -582,22 +626,27 @@ admin.get('/users', async (c) => {
                 </td>
                 <td>
                   {locked ? (
-                    <span class="muted">{u.id === me.id ? 'you' : 'bootstrap admin'}</span>
+                    <span class="muted">{u.id === me.id ? 'Ön' : 'állandó admin'}</span>
                   ) : (
                     <>
+                      {u.role === 'tenant' && !u.banned && (
+                        <>
+                          <PostButton action="/admin/view-as" fields={{ user_id: String(u.id) }} label="nézet bérlőként" cls="link plain" />{' '}
+                        </>
+                      )}
                       <PostButton
                         action={`/admin/users/${u.id}`}
                         fields={{ op: 'role' }}
-                        label={u.role === 'admin' ? 'make tenant' : 'make admin'}
+                        label={u.role === 'admin' ? 'legyen bérlő' : 'legyen admin'}
                         cls="link"
-                        confirm={u.role === 'admin' ? undefined : `Give ${u.email} full admin access?`}
+                        confirm={u.role === 'admin' ? undefined : `Teljes admin jogot ad neki: ${u.email}?`}
                       />{' '}
                       <PostButton
                         action={`/admin/users/${u.id}`}
                         fields={{ op: 'ban' }}
-                        label={u.banned ? 'unban' : 'ban'}
+                        label={u.banned ? 'kitiltás feloldása' : 'kitiltás'}
                         cls="link"
-                        confirm={u.banned ? undefined : `Ban ${u.email}? They lose access immediately.`}
+                        confirm={u.banned ? undefined : `Kitiltja ${u.email} felhasználót? Azonnal elveszíti a hozzáférést.`}
                       />
                     </>
                   )}
@@ -609,28 +658,28 @@ admin.get('/users', async (c) => {
       </table>
 
       <form method="post" action="/admin/users" class="card" style="margin-top:16px">
-        <h2 style="margin-top:0">Invite user</h2>
+        <h2 style="margin-top:0">Felhasználó meghívása</h2>
         <p class="muted">
-          They sign in at this site with their email through Cloudflare Access. Only invited, non-banned emails get in.
+          Az e-mail-címükkel jelentkeznek be ezen az oldalon (egyszer használatos kóddal). Csak meghívott, nem kitiltott címek léphetnek be.
         </p>
         <div class="row">
           <div>
-            <label>Email</label>
+            <label>E-mail</label>
             <input type="email" name="email" required />
           </div>
           <div>
-            <label>Name</label>
+            <label>Név</label>
             <input name="name" />
           </div>
           <div class="shrink">
-            <label>Role</label>
+            <label>Szerepkör</label>
             <select name="role">
-              <option value="tenant">tenant</option>
-              <option value="admin">admin</option>
+              <option value="tenant">Bérlő</option>
+              <option value="admin">Admin</option>
             </select>
           </div>
           <div>
-            <label>Location</label>
+            <label>Ingatlan</label>
             <select name="location_id">
               <option value="">—</option>
               {locations.map((l) => (
@@ -639,7 +688,7 @@ admin.get('/users', async (c) => {
             </select>
           </div>
           <div class="shrink">
-            <button class="primary">Invite</button>
+            <button class="primary">Meghívás</button>
           </div>
         </div>
       </form>
@@ -650,7 +699,7 @@ admin.get('/users', async (c) => {
 admin.post('/users', async (c) => {
   const f = await form(c);
   const email = field(f, 'email').toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return redirect(c, '/admin/users', { err: 'Invalid email' });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return redirect(c, '/admin/users', { err: 'Érvénytelen e-mail-cím' });
   const role = field(f, 'role') === 'admin' ? 'admin' : 'tenant';
   const row = await first<{ id: number }>(
     c.env.DB,
@@ -664,7 +713,7 @@ admin.post('/users', async (c) => {
   if (row && locationId) {
     await run(c.env.DB, 'INSERT INTO location_users (location_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING', locationId, row.id);
   }
-  return redirect(c, '/admin/users', { ok: `${email} invited` });
+  return redirect(c, '/admin/users', { ok: `${email} meghívva` });
 });
 
 admin.post('/users/:id', async (c) => {
@@ -672,10 +721,10 @@ admin.post('/users/:id', async (c) => {
   const user = id ? await getUser(c.env.DB, id) : null;
   if (!user) return notFound(c);
   if (user.id === c.get('user').id || parseList(c.env.ADMIN_EMAILS).includes(user.email.toLowerCase()))
-    return redirect(c, '/admin/users', { err: "You can't change that user" });
+    return redirect(c, '/admin/users', { err: 'Ezt a felhasználót nem módosíthatja' });
   const op = field(await form(c), 'op');
   if (op === 'ban') await run(c.env.DB, 'UPDATE users SET banned = 1 - banned WHERE id = ?', user.id);
   else if (op === 'role') await run(c.env.DB, "UPDATE users SET role = CASE role WHEN 'admin' THEN 'tenant' ELSE 'admin' END WHERE id = ?", user.id);
-  return redirect(c, '/admin/users', { ok: `${user.email} updated` });
+  return redirect(c, '/admin/users', { ok: `${user.email} frissítve` });
 });
 

@@ -1,8 +1,12 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type { MiddlewareHandler } from 'hono';
-import { getUserByEmail, run } from './db';
+import { deleteCookie, getCookie } from 'hono/cookie';
+import { getUser, getUserByEmail, run } from './db';
 import type { AppEnv, User } from './types';
 import { parseList } from './util';
+
+/** Cookie holding the tenant id an admin is previewing as. Only honoured for real admins. */
+export const VIEW_AS_COOKIE = 'view_as';
 
 const jwksByIssuer = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
@@ -61,17 +65,33 @@ export const requireUser: MiddlewareHandler<AppEnv> = async (c, next) => {
   // Basic CSRF protection: state-changing requests must come from our own origin.
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
     const origin = c.req.header('origin');
-    if (origin && origin !== new URL(c.req.url).origin) return c.text('Cross-origin request blocked', 403);
+    if (origin && origin !== new URL(c.req.url).origin) return c.text('Másik oldalról érkező kérés letiltva', 403);
   }
   const email = await authenticatedEmail(c.req.raw, c.env);
-  if (!email) return c.text('Unauthorized. Sign in through Cloudflare Access.', 401);
+  if (!email) return c.text('Nincs bejelentkezve. Jelentkezzen be a Cloudflare Accessen keresztül.', 401);
   const user = await resolveUser(c.env, email);
-  if (!user) return c.text(`Access denied for ${email}. Ask the landlord for an invite.`, 403);
+  if (!user) return c.text(`${email} számára nincs hozzáférés. Kérjen meghívót a főbérlőtől.`, 403);
   c.set('user', user);
+
+  // Admin "view as tenant" preview: render everything as that tenant, read-only.
+  const viewAs = user.role === 'admin' ? Number(getCookie(c, VIEW_AS_COOKIE)) : 0;
+  if (viewAs) {
+    const target = await getUser(c.env.DB, viewAs);
+    if (target && target.role === 'tenant' && !target.banned) {
+      const path = new URL(c.req.url).pathname;
+      if (c.req.method !== 'GET' && c.req.method !== 'HEAD' && path !== '/view-as/stop') {
+        return c.text('Bérlői előnézetben nem lehet módosítani. Lépjen vissza az admin nézetbe.', 403);
+      }
+      c.set('realUser', user);
+      c.set('user', target);
+    } else {
+      deleteCookie(c, VIEW_AS_COOKIE, { path: '/' });
+    }
+  }
   await next();
 };
 
 export const requireAdmin: MiddlewareHandler<AppEnv> = async (c, next) => {
-  if (c.get('user').role !== 'admin') return c.text('Admins only', 403);
+  if (c.get('user').role !== 'admin') return c.text('Csak adminisztrátoroknak', 403);
   await next();
 };

@@ -106,19 +106,32 @@ export interface Comment {
   created_at: string;
 }
 
-export type AppEnv = { Bindings: Env; Variables: { user: User } };
+/** `user` is who the UI renders for; `realUser` is set when an admin previews as a tenant. */
+export type AppEnv = { Bindings: Env; Variables: { user: User; realUser?: User } };
 
 export const UTILITY_LABELS: Record<UtilityType, string> = {
-  electricity: 'Electricity',
-  gas: 'Gas',
-  water: 'Water',
+  electricity: 'Áram',
+  gas: 'Gáz',
+  water: 'Víz',
   internet: 'Internet',
-  other: 'Other',
+  other: 'Egyéb',
 };
 
 export const LINE_KIND_LABELS: Record<LineKind, string> = {
-  utility: 'Utility',
-  rent: 'Rent',
-  condo_fee: 'Condo fee',
-  adjustment: 'Adjustment',
+  utility: 'Rezsi',
+  rent: 'Bérleti díj',
+  condo_fee: 'Közös költség',
+  adjustment: 'Korrekció',
 };
+
+export const STATUS_LABELS: Record<string, string> = {
+  pending_review: 'Ellenőrzésre vár',
+  approved: 'Jóváhagyva',
+  rejected: 'Elutasítva',
+  duplicate: 'Duplikált',
+  draft: 'Piszkozat',
+  sent: 'Kiküldve',
+  paid: 'Fizetve',
+};
+
+export const ROLE_LABELS: Record<string, string> = { admin: 'Admin', tenant: 'Bérlő' };

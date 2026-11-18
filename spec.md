@@ -124,6 +124,11 @@ comments(id, statement_id, line_item_id?, user_id, body, created_at)
     statements, "create statement for month".
   - `/statements/:id`: shared with tenants; admins get edit controls.
   - `/admin/users`: invite, change role, ban/unban.
+  - **View as tenant**: admin picks a tenant (dashboard or users page) and sees the site
+    exactly as that tenant, read-only, with a banner to switch back. Implemented as an
+    HttpOnly cookie that is only honoured when the Access-authenticated user is an admin;
+    all writes are blocked while previewing.
+- UI language: Hungarian.
 
 ## Phases
 

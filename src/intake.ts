@@ -24,7 +24,7 @@ export async function ingestPdf(env: Env, input: IngestInput): Promise<number> {
   let extraction: string;
   try {
     const text = await pdfToText(env, input.filename, input.bytes);
-    if (text.replace(/\s/g, '').length < 50) throw new Error('PDF has no readable text (scanned image?)');
+    if (text.replace(/\s/g, '').length < 50) throw new Error('A PDF-ben nincs olvasható szöveg (szkennelt kép?)');
     const result = await extractFields(env, text);
     fields = result.fields;
     extraction = JSON.stringify({ model: env.AI_MODEL, raw: result.raw });
@@ -41,7 +41,7 @@ export async function ingestPdf(env: Env, input: IngestInput): Promise<number> {
     emailFrom: input.emailFrom ?? null,
     emailSubject: input.emailSubject ?? null,
     extraction,
-    notes: fields ? fields.notes : 'Automatic extraction failed — fill in the fields manually.',
+    notes: fields ? fields.notes : 'Az automatikus adatkinyerés nem sikerült — töltse ki a mezőket kézzel.',
   });
 }
 
@@ -175,7 +175,7 @@ export async function handleEmail(message: ForwardableEmailMessage, env: Env): P
       emailFrom,
       emailSubject,
       extraction: null,
-      notes: 'Email had no PDF attachment (the bill may be behind a link). Check the raw email and upload the PDF.',
+      notes: 'Az e-mailben nem volt PDF melléklet (a számla lehet, hogy linken érhető el). Nézze meg az eredeti e-mailt, és töltse fel a PDF-et.',
     });
     return;
   }

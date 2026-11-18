@@ -1,6 +1,6 @@
 import type { Child } from 'hono/jsx';
 import { formatMoney } from '../money';
-import type { User } from '../types';
+import { STATUS_LABELS, type User } from '../types';
 
 const CSS = `
 :root { --fg:#1d2433; --muted:#667085; --line:#e4e7ec; --bg:#f7f8fa; --accent:#f6821f; --ok:#12805c; --bad:#c4320a; --warn:#b54708; }
@@ -48,12 +48,22 @@ iframe.pdf { width:100%; height:80vh; border:1px solid var(--line); border-radiu
 @media (max-width: 800px) { .split { grid-template-columns: 1fr; } iframe.pdf { height:60vh; } }
 .comment { border-left:3px solid var(--line); padding:4px 10px; margin:8px 0; }
 .total { font-size:28px; font-weight:700; }
+.preview { background:#1d2433; color:#fff; }
+.preview .in { max-width:1100px; margin:0 auto; padding:8px 20px; display:flex; gap:16px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+button.link.plain { color:#175cd3; }
 `;
 
-export function Layout(props: { title: string; user?: User; flash?: { ok?: string; err?: string }; children: Child }) {
+export function Layout(props: {
+  title: string;
+  user?: User;
+  /** Set when an admin is previewing the site as `user`. */
+  impersonator?: User;
+  flash?: { ok?: string; err?: string };
+  children: Child;
+}) {
   const admin = props.user?.role === 'admin';
   return (
-    <html lang="en">
+    <html lang="hu">
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -61,19 +71,31 @@ export function Layout(props: { title: string; user?: User; flash?: { ok?: strin
         <style dangerouslySetInnerHTML={{ __html: CSS }} />
       </head>
       <body>
+        {props.impersonator && (
+          <div class="preview">
+            <div class="in">
+              <span>
+                Bérlői nézet: <b>{props.user?.name ?? props.user?.email}</b> — így látja az oldalt. Csak olvasható.
+              </span>
+              <form class="inline" method="post" action="/view-as/stop">
+                <button class="primary">Vissza az admin nézetbe</button>
+              </form>
+            </div>
+          </div>
+        )}
         <header>
           <div class="in">
             <a class="brand" href="/">auto-bill</a>
             <nav>
               {admin ? (
                 <>
-                  <a href="/admin">Dashboard</a>
-                  <a href="/admin/bills">Bills</a>
-                  <a href="/admin/locations">Locations</a>
-                  <a href="/admin/users">Users</a>
+                  <a href="/admin">Áttekintés</a>
+                  <a href="/admin/bills">Számlák</a>
+                  <a href="/admin/locations">Ingatlanok</a>
+                  <a href="/admin/users">Felhasználók</a>
                 </>
               ) : (
-                <a href="/">My statements</a>
+                <a href="/">Elszámolásaim</a>
               )}
             </nav>
             {props.user && <span class="who">{props.user.email}</span>}
@@ -89,7 +111,7 @@ export function Layout(props: { title: string; user?: User; flash?: { ok?: strin
   );
 }
 
-export const Badge = (p: { status: string }) => <span class={`badge ${p.status}`}>{p.status.replace('_', ' ')}</span>;
+export const Badge = (p: { status: string }) => <span class={`badge ${p.status}`}>{STATUS_LABELS[p.status] ?? p.status}</span>;
 
 export const Money = (p: { amount: number | null | undefined; currency: string | null | undefined }) => (
   <span class={p.amount != null && p.amount < 0 ? 'neg' : ''}>{formatMoney(p.amount, p.currency)}</span>

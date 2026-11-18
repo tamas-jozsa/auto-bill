@@ -107,9 +107,9 @@ describe('utilityLineDescription', () => {
   it('uses period when present, else invoice number', () => {
     expect(
       utilityLineDescription({ utility_type: 'water', provider: 'EPAL', period_start: '2025-08-11', period_end: '2025-09-10', invoice_number: 'X' }),
-    ).toBe('Water · EPAL · 2025-08-11 – 2025-09-10');
+    ).toBe('Víz · EPAL · 2025-08-11 – 2025-09-10');
     expect(utilityLineDescription({ utility_type: 'gas', provider: null, period_start: null, period_end: null, invoice_number: '123' })).toBe(
-      'Gas · #123',
+      'Gáz · #123',
     );
   });
 });

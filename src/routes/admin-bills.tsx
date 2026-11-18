@@ -3,7 +3,7 @@ import { getBill, getLocation, listBills, listLocations, run, statementOfBill } 
 import { ingestPdf, reextractBill } from '../intake';
 import { minorToInput, parseAmount } from '../money';
 import { syncBillLine } from '../statements';
-import { BILL_STATUSES, UTILITY_LABELS, UTILITY_TYPES, type AppEnv, type Bill } from '../types';
+import { BILL_STATUSES, STATUS_LABELS, UTILITY_LABELS, UTILITY_TYPES, type AppEnv, type Bill } from '../types';
 import { Badge, Layout, Money, Options, PostButton } from '../ui/layout';
 import { isDate, normalizeContract, nullIfEmpty } from '../util';
 import { field, file, flash, form, intParam, notFound, redirect } from './common';
@@ -23,16 +23,16 @@ adminBills.get('/', async (c) => {
   const valid = status === 'all' || (BILL_STATUSES as readonly string[]).includes(status);
   const bills = await listBills(c.env.DB, { status: valid && status !== 'all' ? status : undefined });
   return c.html(
-    <Layout title="Bills" user={c.get('user')} flash={flash(c)}>
-      <h1>Bills</h1>
+    <Layout title="Számlák" user={c.get('user')} flash={flash(c)}>
+      <h1>Számlák</h1>
       <div class="actions" style="margin-bottom:16px">
         {[...BILL_STATUSES, 'all'].map((s) => (
           <a class={`btn ${s === status ? 'primary' : ''}`} href={`/admin/bills?status=${s}`}>
-            {s.replace('_', ' ')}
+            {s === 'all' ? 'Összes' : STATUS_LABELS[s]}
           </a>
         ))}
         <a class="btn" href="/admin/bills/new" style="margin-left:auto">
-          Upload PDF
+          PDF feltöltése
         </a>
       </div>
       <BillTable bills={bills} />
@@ -41,19 +41,19 @@ adminBills.get('/', async (c) => {
 });
 
 export function BillTable(p: { bills: (Bill & { location_name: string | null; statement_id: number | null; statement_month: string | null })[] }) {
-  if (p.bills.length === 0) return <p class="muted">Nothing here.</p>;
+  if (p.bills.length === 0) return <p class="muted">Nincs itt semmi.</p>;
   return (
     <table>
       <thead>
         <tr>
           <th>#</th>
-          <th>Status</th>
-          <th>Type / provider</th>
-          <th>Location</th>
-          <th>Contract</th>
-          <th>Due</th>
-          <th class="num">Amount</th>
-          <th>Statement</th>
+          <th>Állapot</th>
+          <th>Típus / szolgáltató</th>
+          <th>Ingatlan</th>
+          <th>Azonosító</th>
+          <th>Határidő</th>
+          <th class="num">Összeg</th>
+          <th>Elszámolás</th>
         </tr>
       </thead>
       <tbody>
@@ -69,7 +69,7 @@ export function BillTable(p: { bills: (Bill & { location_name: string | null; st
               {UTILITY_LABELS[b.utility_type]}
               <div class="muted">{b.provider ?? b.email_subject ?? ''}</div>
             </td>
-            <td>{b.location_name ?? <span class="badge rejected">unassigned</span>}</td>
+            <td>{b.location_name ?? <span class="badge rejected">nincs hozzárendelve</span>}</td>
             <td>{b.contract_number ?? '—'}</td>
             <td>{b.due_date ?? '—'}</td>
             <td class="num">
@@ -85,13 +85,13 @@ export function BillTable(p: { bills: (Bill & { location_name: string | null; st
 
 adminBills.get('/new', (c) =>
   c.html(
-    <Layout title="Upload bill" user={c.get('user')} flash={flash(c)}>
-      <h1>Upload a bill PDF</h1>
+    <Layout title="Számla feltöltése" user={c.get('user')} flash={flash(c)}>
+      <h1>Számla PDF feltöltése</h1>
       <form method="post" action="/admin/bills" enctype="multipart/form-data" class="card">
-        <p class="muted">The PDF goes through the same extraction as emailed bills and lands in the review queue.</p>
+        <p class="muted">A PDF ugyanúgy feldolgozásra kerül, mint az e-mailben érkező számlák, és az ellenőrzési sorba kerül.</p>
         <input type="file" name="file" accept="application/pdf" required />
         <div class="actions">
-          <button class="primary">Upload &amp; extract</button>
+          <button class="primary">Feltöltés és feldolgozás</button>
         </div>
       </form>
     </Layout>,
@@ -101,12 +101,12 @@ adminBills.get('/new', (c) =>
 adminBills.post('/', async (c) => {
   const f = await form(c);
   const pdf = file(f, 'file');
-  if (!pdf) return redirect(c, '/admin/bills/new', { err: 'Choose a PDF file' });
-  if (pdf.size > MAX_UPLOAD) return redirect(c, '/admin/bills/new', { err: 'File is larger than 20 MB' });
+  if (!pdf) return redirect(c, '/admin/bills/new', { err: 'Válasszon PDF fájlt' });
+  if (pdf.size > MAX_UPLOAD) return redirect(c, '/admin/bills/new', { err: 'A fájl nagyobb 20 MB-nál' });
   const bytes = await pdf.arrayBuffer();
-  if (new TextDecoder().decode(bytes.slice(0, 5)) !== '%PDF-') return redirect(c, '/admin/bills/new', { err: 'That is not a PDF' });
+  if (new TextDecoder().decode(bytes.slice(0, 5)) !== '%PDF-') return redirect(c, '/admin/bills/new', { err: 'Ez nem PDF fájl' });
   const id = await ingestPdf(c.env, { bytes, filename: pdf.name || 'upload.pdf', source: 'upload' });
-  return redirect(c, `/admin/bills/${id}`, { ok: 'Uploaded. Check the extracted fields.' });
+  return redirect(c, `/admin/bills/${id}`, { ok: 'Feltöltve. Ellenőrizze a kinyert adatokat.' });
 });
 
 adminBills.get('/:id', async (c) => {
@@ -124,32 +124,32 @@ adminBills.get('/:id', async (c) => {
   }
 
   return c.html(
-    <Layout title={`Bill ${bill.id}`} user={c.get('user')} flash={flash(c)}>
+    <Layout title={`Számla ${bill.id}`} user={c.get('user')} flash={flash(c)}>
       <h1>
-        Bill #{bill.id} <Badge status={bill.status} />
+        Számla #{bill.id} <Badge status={bill.status} />
       </h1>
       <div class="split">
         <div>
           {statement && (
             <div class="flash ok">
-              On statement <a href={`/statements/${statement.id}`}>{statement.month}</a> ({statement.status})
-              {statement.status !== 'draft' && ' — edits here no longer change that statement.'}
+              Elszámolás: <a href={`/statements/${statement.id}`}>{statement.month}</a> ({STATUS_LABELS[statement.status]})
+              {statement.status !== 'draft' && ' — az itteni módosítások már nem változtatják meg.'}
             </div>
           )}
           {!bill.location_id && bill.contract_number && (
             <div class="flash err">
-              Unknown contract number <b>{bill.contract_number}</b>. Pick a location below — it will be remembered for future bills.
+              Ismeretlen azonosító: <b>{bill.contract_number}</b>. Válasszon ingatlant lent — a rendszer megjegyzi a következő számlákhoz.
             </div>
           )}
           {currencyMismatch && (
             <div class="flash err">
-              Bill currency {bill.currency} differs from the location currency {location.currency}; it can't go on a statement.
+              A számla pénzneme ({bill.currency}) eltér az ingatlanétól ({location.currency}), így nem kerülhet elszámolásba.
             </div>
           )}
           <form method="post" action={`/admin/bills/${bill.id}`} class="card">
-            <label>Location</label>
+            <label>Ingatlan</label>
             <select name="location_id">
-              <option value="">— unassigned —</option>
+              <option value="">— nincs hozzárendelve —</option>
               {locations.map((l) => (
                 <option value={String(l.id)} selected={l.id === bill.location_id}>
                   {l.name}
@@ -157,16 +157,16 @@ adminBills.get('/:id', async (c) => {
               ))}
             </select>
             <label>
-              <input type="checkbox" name="remember_contract" value="1" checked={!bill.location_id} /> Remember this contract
-              number for the selected location
+              <input type="checkbox" name="remember_contract" value="1" checked={!bill.location_id} /> Az azonosító megjegyzése
+              a kiválasztott ingatlanhoz
             </label>
             <div class="row">
               <div>
-                <label>Contract / identity number</label>
+                <label>Felhasználó azonosító / szerződésszám</label>
                 <input name="contract_number" value={bill.contract_number ?? ''} />
               </div>
               <div>
-                <label>Type</label>
+                <label>Típus</label>
                 <select name="utility_type">
                   <Options values={UTILITY_TYPES} selected={bill.utility_type} labels={UTILITY_LABELS} />
                 </select>
@@ -174,97 +174,97 @@ adminBills.get('/:id', async (c) => {
             </div>
             <div class="row">
               <div>
-                <label>Provider</label>
+                <label>Szolgáltató</label>
                 <input name="provider" value={bill.provider ?? ''} />
               </div>
               <div>
-                <label>Invoice number</label>
+                <label>Számlaszám</label>
                 <input name="invoice_number" value={bill.invoice_number ?? ''} />
               </div>
             </div>
             <div class="row">
               <div>
-                <label>Amount to pay</label>
+                <label>Fizetendő összeg</label>
                 <input name="amount" value={minorToInput(bill.amount)} placeholder="18.10" />
               </div>
               <div>
-                <label>Currency</label>
+                <label>Pénznem</label>
                 <input name="currency" value={bill.currency ?? location?.currency ?? ''} maxlength={3} />
               </div>
             </div>
             <div class="row">
               <div>
-                <label>Issue date</label>
+                <label>Kiállítás dátuma</label>
                 <input type="date" name="issue_date" value={bill.issue_date ?? ''} />
               </div>
               <div>
-                <label>Due date</label>
+                <label>Fizetési határidő</label>
                 <input type="date" name="due_date" value={bill.due_date ?? ''} />
               </div>
             </div>
             <div class="row">
               <div>
-                <label>Period start</label>
+                <label>Időszak kezdete</label>
                 <input type="date" name="period_start" value={bill.period_start ?? ''} />
               </div>
               <div>
-                <label>Period end</label>
+                <label>Időszak vége</label>
                 <input type="date" name="period_end" value={bill.period_end ?? ''} />
               </div>
             </div>
-            <label>Notes</label>
+            <label>Megjegyzés</label>
             <textarea name="notes" rows={2}>
               {bill.notes ?? ''}
             </textarea>
             <div class="actions">
-              <button name="action" value="save">Save</button>
+              <button name="action" value="save">Mentés</button>
               <button name="action" value="approve" class="primary">
-                Save &amp; approve
+                Mentés és jóváhagyás
               </button>
               <button name="action" value="reject" class="danger">
-                Reject
+                Elutasítás
               </button>
-              {bill.status !== 'pending_review' && <button name="action" value="pending">Back to review</button>}
+              {bill.status !== 'pending_review' && <button name="action" value="pending">Vissza ellenőrzésre</button>}
             </div>
           </form>
 
           <form method="post" action={`/admin/bills/${bill.id}/payment`} enctype="multipart/form-data" class="card">
-            <h2 style="margin-top:0">Payment</h2>
-            <label>Paid on</label>
+            <h2 style="margin-top:0">Befizetés</h2>
+            <label>Fizetés dátuma</label>
             <input type="date" name="paid_at" value={bill.paid_at ?? ''} />
-            <label>Proof of payment (PDF or image){bill.proof_key && ' — replaces the current one'}</label>
+            <label>Befizetési igazolás (PDF vagy kép){bill.proof_key && ' — lecseréli a jelenlegit'}</label>
             <input type="file" name="proof" accept="application/pdf,image/png,image/jpeg,image/webp" />
             {bill.proof_key && (
               <p>
                 <a href={`/files/bills/${bill.id}/proof`} target="_blank">
-                  Current proof
+                  Jelenlegi igazolás
                 </a>
               </p>
             )}
             <div class="actions">
-              <button class="primary">Save payment</button>
+              <button class="primary">Befizetés mentése</button>
             </div>
           </form>
 
           <div class="card">
             <div class="muted">
-              Source: {bill.source}
-              {bill.email_from && ` · from ${bill.email_from}`}
-              {bill.email_subject && ` · “${bill.email_subject}”`} · received {bill.created_at}
+              Forrás: {bill.source === 'email' ? 'e-mail' : 'feltöltés'}
+              {bill.email_from && ` · feladó: ${bill.email_from}`}
+              {bill.email_subject && ` · “${bill.email_subject}”`} · érkezett: {bill.created_at}
             </div>
             <div class="actions">
               {bill.raw_email_key && (
                 <a class="btn" href={`/files/bills/${bill.id}/raw`}>
-                  Download raw email
+                  Eredeti e-mail letöltése
                 </a>
               )}
               {bill.pdf_key && (
-                <PostButton action={`/admin/bills/${bill.id}/reextract`} label="Re-run extraction" confirm="Overwrite the fields with a fresh AI extraction?" />
+                <PostButton action={`/admin/bills/${bill.id}/reextract`} label="Adatkinyerés újrafuttatása" confirm="Felülírja a mezőket egy új AI-feldolgozással?" />
               )}
             </div>
             {extraction && (
               <details>
-                <summary class="muted">AI output</summary>
+                <summary class="muted">AI kimenet</summary>
                 <pre style="white-space:pre-wrap;font-size:12px">{extraction}</pre>
               </details>
             )}
@@ -272,9 +272,9 @@ adminBills.get('/:id', async (c) => {
         </div>
         <div>
           {bill.pdf_key ? (
-            <iframe class="pdf" src={`/files/bills/${bill.id}/pdf`} title="Bill PDF"></iframe>
+            <iframe class="pdf" src={`/files/bills/${bill.id}/pdf`} title="Számla PDF"></iframe>
           ) : (
-            <div class="card muted">No PDF stored for this bill.</div>
+            <div class="card muted">Ehhez a számlához nincs PDF.</div>
           )}
         </div>
       </div>
@@ -292,20 +292,20 @@ adminBills.post('/:id', async (c) => {
 
   const locationId = Number(field(f, 'location_id')) || null;
   const location = locationId ? await getLocation(c.env.DB, locationId) : null;
-  if (locationId && !location) return redirect(c, back, { err: 'Unknown location' });
+  if (locationId && !location) return redirect(c, back, { err: 'Ismeretlen ingatlan' });
 
   const amountRaw = field(f, 'amount');
   const amount = parseAmount(amountRaw);
-  if (amountRaw && amount == null) return redirect(c, back, { err: `Can't parse amount "${amountRaw}"` });
+  if (amountRaw && amount == null) return redirect(c, back, { err: `Érvénytelen összeg: "${amountRaw}"` });
 
   const dates: Record<string, string | null> = {};
   for (const k of ['issue_date', 'due_date', 'period_start', 'period_end']) {
     const v = field(f, k);
-    if (v && !isDate(v)) return redirect(c, back, { err: `Invalid ${k}` });
+    if (v && !isDate(v)) return redirect(c, back, { err: 'Érvénytelen dátum' });
     dates[k] = v || null;
   }
   const currency = field(f, 'currency').toUpperCase() || null;
-  if (currency && !/^[A-Z]{3}$/.test(currency)) return redirect(c, back, { err: 'Currency must be a 3-letter code' });
+  if (currency && !/^[A-Z]{3}$/.test(currency)) return redirect(c, back, { err: 'A pénznem 3 betűs kód legyen (pl. HUF, EUR)' });
   const utilityType = (UTILITY_TYPES as readonly string[]).includes(field(f, 'utility_type')) ? field(f, 'utility_type') : 'other';
   const contractNumber = normalizeContract(field(f, 'contract_number'));
 
@@ -313,10 +313,10 @@ adminBills.post('/:id', async (c) => {
     action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : action === 'pending' ? 'pending_review' : bill.status;
 
   if (status === 'approved') {
-    if (!location) return redirect(c, back, { err: 'Pick a location before approving' });
-    if (amount == null) return redirect(c, back, { err: 'Enter the amount before approving' });
+    if (!location) return redirect(c, back, { err: 'Jóváhagyás előtt válasszon ingatlant' });
+    if (amount == null) return redirect(c, back, { err: 'Jóváhagyás előtt adja meg az összeget' });
     if (currency && currency !== location.currency)
-      return redirect(c, back, { err: `Currency ${currency} doesn't match the location currency ${location.currency}` });
+      return redirect(c, back, { err: `A pénznem (${currency}) nem egyezik az ingatlanéval (${location.currency})` });
   }
 
   const updated: Bill = {
@@ -374,10 +374,10 @@ adminBills.post('/:id', async (c) => {
   if (status === 'approved' && bill.status !== 'approved') {
     // Jump to the next bill waiting for review, if any.
     const next = await c.env.DB.prepare("SELECT id FROM bills WHERE status = 'pending_review' ORDER BY id LIMIT 1").first<{ id: number }>();
-    if (next) return redirect(c, `/admin/bills/${next.id}`, { ok: `Bill #${bill.id} approved. Next in queue:` });
-    return redirect(c, '/admin/bills', { ok: `Bill #${bill.id} approved. Review queue is empty.` });
+    if (next) return redirect(c, `/admin/bills/${next.id}`, { ok: `A(z) #${bill.id} számla jóváhagyva. Következő a sorban:` });
+    return redirect(c, '/admin/bills', { ok: `A(z) #${bill.id} számla jóváhagyva. Az ellenőrzési sor üres.` });
   }
-  return redirect(c, back, { ok: status === 'rejected' ? 'Rejected' : 'Saved' });
+  return redirect(c, back, { ok: status === 'rejected' ? 'Elutasítva' : 'Mentve' });
 });
 
 adminBills.post('/:id/payment', async (c) => {
@@ -387,14 +387,14 @@ adminBills.post('/:id/payment', async (c) => {
   const back = `/admin/bills/${bill.id}`;
   const f = await form(c);
   const paidAt = field(f, 'paid_at');
-  if (paidAt && !isDate(paidAt)) return redirect(c, back, { err: 'Invalid payment date' });
+  if (paidAt && !isDate(paidAt)) return redirect(c, back, { err: 'Érvénytelen fizetési dátum' });
 
   let proofKey = bill.proof_key;
   const proof = file(f, 'proof');
   if (proof) {
     const ext = PROOF_TYPES[proof.type];
-    if (!ext) return redirect(c, back, { err: 'Proof must be a PDF, PNG, JPEG or WebP' });
-    if (proof.size > MAX_UPLOAD) return redirect(c, back, { err: 'File is larger than 20 MB' });
+    if (!ext) return redirect(c, back, { err: 'Az igazolás PDF, PNG, JPEG vagy WebP lehet' });
+    if (proof.size > MAX_UPLOAD) return redirect(c, back, { err: 'A fájl nagyobb 20 MB-nál' });
     proofKey = `proofs/${crypto.randomUUID()}.${ext}`;
     await c.env.FILES.put(proofKey, await proof.arrayBuffer(), { httpMetadata: { contentType: proof.type } });
     if (bill.proof_key) await c.env.FILES.delete(bill.proof_key);
@@ -406,7 +406,7 @@ adminBills.post('/:id/payment', async (c) => {
     proofKey,
     bill.id,
   );
-  return redirect(c, back, { ok: 'Payment saved' });
+  return redirect(c, back, { ok: 'Befizetés mentve' });
 });
 
 adminBills.post('/:id/reextract', async (c) => {
@@ -416,9 +416,9 @@ adminBills.post('/:id/reextract', async (c) => {
   try {
     await reextractBill(c.env, bill.id, bill.pdf_key);
   } catch (err) {
-    return redirect(c, `/admin/bills/${bill.id}`, { err: `Extraction failed: ${String(err).slice(0, 200)}` });
+    return redirect(c, `/admin/bills/${bill.id}`, { err: `Az adatkinyerés nem sikerült: ${String(err).slice(0, 200)}` });
   }
   const updated = await getBill(c.env.DB, bill.id);
   if (updated) await syncBillLine(c.env.DB, updated);
-  return redirect(c, `/admin/bills/${bill.id}`, { ok: 'Fields re-extracted — review them.' });
+  return redirect(c, `/admin/bills/${bill.id}`, { ok: 'Mezők újra kinyerve — ellenőrizze őket.' });
 });

@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
-import { requireAdmin, requireUser } from './auth';
+import { deleteCookie } from 'hono/cookie';
+import { requireAdmin, requireUser, VIEW_AS_COOKIE } from './auth';
 import { handleEmail } from './intake';
 import { admin } from './routes/admin';
 import { files } from './routes/files';
@@ -12,6 +13,10 @@ const app = new Hono<AppEnv>();
 
 app.get('/healthz', (c) => c.text('ok'));
 app.use('*', requireUser);
+app.post('/view-as/stop', (c) => {
+  deleteCookie(c, VIEW_AS_COOKIE, { path: '/' });
+  return c.redirect('/', 303);
+});
 app.use('/admin/*', requireAdmin);
 app.use('/admin', requireAdmin);
 app.route('/admin', admin);
@@ -20,7 +25,7 @@ app.route('/', tenant);
 
 app.onError((err, c) => {
   console.error(err);
-  return c.text('Something went wrong.', 500);
+  return c.text('Hiba történt.', 500);
 });
 
 export default {

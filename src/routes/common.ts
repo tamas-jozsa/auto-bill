@@ -59,4 +59,4 @@ export async function canSeeBill(db: D1Database, user: User, billId: number): Pr
   return !!row;
 }
 
-export const notFound = (c: Ctx) => c.text('Not found', 404);
+export const notFound = (c: Ctx) => c.text('Nem található', 404);
