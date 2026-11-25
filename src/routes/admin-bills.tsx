@@ -53,10 +53,11 @@ export function BillTable(p: { bills: (Bill & { location_name: string | null; st
     );
   return (
     <TableWrap>
-    <table>
+    <table class="compact">
       <thead>
         <tr>
           <th>#</th>
+          <th>PDF</th>
           <th>Állapot</th>
           <th>Típus / szolgáltató</th>
           <th>Ingatlan</th>
@@ -75,6 +76,22 @@ export function BillTable(p: { bills: (Bill & { location_name: string | null; st
               </a>
             </td>
             <td>
+              <div class="docs-cell">
+                {b.pdf_key ? (
+                  <a class="doc" href={`/files/bills/${b.id}/pdf`} target="_blank" rel="noopener" title="Számla PDF megnyitása új lapon">
+                    <Icon name="file" /> PDF
+                  </a>
+                ) : (
+                  <span class="muted">—</span>
+                )}
+                {b.proof_key && (
+                  <a class="doc" href={`/files/bills/${b.id}/proof`} target="_blank" rel="noopener" title="Befizetési igazolás">
+                    <Icon name="checkCircle" /> igazolás
+                  </a>
+                )}
+              </div>
+            </td>
+            <td>
               <Badge status={b.status} />
             </td>
             <td>
@@ -82,17 +99,19 @@ export function BillTable(p: { bills: (Bill & { location_name: string | null; st
                 <KindIcon kind={b.utility_type} small />
                 <div>
                   {UTILITY_LABELS[b.utility_type]}
-                  <div class="muted">{b.provider ?? b.email_subject ?? ''}</div>
+                  <div class="muted clip" title={b.provider ?? b.email_subject ?? ''}>
+                    {b.provider ?? b.email_subject ?? ''}
+                  </div>
                 </div>
               </div>
             </td>
-            <td>{b.location_name ?? <span class="badge rejected">nincs hozzárendelve</span>}</td>
+            <td>{b.location_name ?? <span class="badge rejected">nincs ingatlan</span>}</td>
             <td>{b.contract_number ?? '—'}</td>
-            <td>{b.due_date ?? '—'}</td>
+            <td class="nowrap">{b.due_date ?? '—'}</td>
             <td class="num">
               <Money amount={b.amount} currency={b.currency} />
             </td>
-            <td>{b.statement_id ? <a href={`/statements/${b.statement_id}`}>{b.statement_month && monthLabel(b.statement_month)}</a> : '—'}</td>
+            <td class="nowrap">{b.statement_id ? <a href={`/statements/${b.statement_id}`}>{b.statement_month && monthLabel(b.statement_month)}</a> : '—'}</td>
           </tr>
         ))}
       </tbody>

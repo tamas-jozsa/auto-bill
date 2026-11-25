@@ -115,6 +115,7 @@ tfoot td { font-weight:750; border-top:1px solid var(--line-2); border-bottom:no
 .card > table tbody tr:hover { background:transparent; }
 code { font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--surface-2); border:1px solid var(--line); padding:1px 6px; border-radius:6px; }
 td .cell { display:flex; gap:10px; align-items:center; }
+table.compact th, table.compact td { padding-left:10px; padding-right:10px; }
 
 /* badges */
 .badge { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:650; background:var(--surface-2); color:var(--muted); white-space:nowrap; border:1px solid var(--line); line-height:1.4; }
@@ -235,6 +236,9 @@ a.chip:hover { background:rgba(255,255,255,.28); text-decoration:none; }
 .card.flush > .card-head { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:10px; }
 .card.flush > .card-head h2 { margin:0; font-size:16px; }
 .doc { display:inline-flex; align-items:center; gap:5px; font-size:12.5px; font-weight:600; padding:3px 10px; border-radius:999px; background:var(--surface-2); border:1px solid var(--line); color:var(--fg-2); }
+.nowrap { white-space:nowrap; }
+.clip { max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.docs-cell { display:flex; gap:6px; flex-wrap:nowrap; align-items:center; white-space:nowrap; }
 .doc:hover { border-color:var(--accent); color:var(--accent-2); text-decoration:none; }
 .doc .icon { width:14px; height:14px; }
 
