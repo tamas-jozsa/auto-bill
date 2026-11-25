@@ -1,4 +1,5 @@
 import { all, first, run } from './db';
+import { formatMoney } from './money';
 import type { Bill } from './types';
 import { UTILITY_LABELS } from './types';
 
@@ -73,6 +74,7 @@ export async function pullBills(db: D1Database, statementId: number): Promise<nu
         .bind(statementId, utilityLineDescription(b), b.amount, b.id),
     ),
   );
+  await applyCredits(db, st.location_id);
   return bills.length;
 }
 
@@ -89,11 +91,68 @@ export async function syncBillLine(db: D1Database, bill: Bill): Promise<void> {
   );
   if (!line || line.status !== 'draft') return;
   const billable = bill.status === 'approved' && bill.amount != null && bill.location_id === line.location_id;
-  if (!billable) {
-    await run(db, 'DELETE FROM line_items WHERE id = ?', line.id);
-    return;
-  }
-  await run(db, 'UPDATE line_items SET description = ?, amount = ? WHERE id = ?', utilityLineDescription(bill), bill.amount, line.id);
+  if (!billable) await run(db, 'DELETE FROM line_items WHERE id = ?', line.id);
+  else await run(db, 'UPDATE line_items SET description = ?, amount = ? WHERE id = ?', utilityLineDescription(bill), bill.amount, line.id);
+  await applyCredits(db, line.location_id);
+}
+
+/** Bills from the same provider account share a credit balance. */
+export function accountKey(b: Pick<Bill, 'contract_number' | 'utility_type' | 'provider'>): string {
+  return b.contract_number ? `c:${b.contract_number}` : `t:${b.utility_type}:${(b.provider ?? '').toLowerCase()}`;
+}
+
+export interface CreditInput {
+  key: string;
+  amount: number; // the bill's real amount
+  lineAmount: number; // what is currently charged on the statement
+  locked: boolean; // statement already sent/paid: never change it
+}
+
+/**
+ * Providers don't refund a negative bill; they keep it as credit on the account and the
+ * landlord pays less on the following bills. So the tenant is charged max(0, bill − credit)
+ * and the credit carries forward. Rows must be in billing order. Returns the charge per row.
+ */
+export function computeCharges(rows: CreditInput[]): { charge: number; creditUsed: number }[] {
+  const credit = new Map<string, number>();
+  return rows.map((r) => {
+    const available = credit.get(r.key) ?? 0;
+    const charge = r.locked ? r.lineAmount : Math.max(0, r.amount - available);
+    // Credit left = what the tenant was charged above/below the real bill.
+    credit.set(r.key, Math.max(0, available + charge - r.amount));
+    return { charge, creditUsed: r.amount > 0 ? Math.max(0, r.amount - charge) : 0 };
+  });
+}
+
+export function creditNote(amount: number, charge: number, creditUsed: number, currency: string): string {
+  if (amount < 0) return ` · jóváírás ${formatMoney(-amount, currency)}, a következő számlákból levonva`;
+  if (creditUsed > 0) return ` · számla ${formatMoney(amount, currency)}, korábbi jóváírás levonva: ${formatMoney(creditUsed, currency)}`;
+  return '';
+}
+
+/** Recompute utility line amounts on the location's draft statements so credits carry forward. */
+export async function applyCredits(db: D1Database, locationId: number): Promise<void> {
+  const rows = await all<Bill & { line_id: number; line_amount: number; line_description: string; st_status: string; loc_currency: string }>(
+    db,
+    `SELECT b.*, li.id AS line_id, li.amount AS line_amount, li.description AS line_description,
+            s.status AS st_status, l.currency AS loc_currency
+     FROM line_items li JOIN bills b ON b.id = li.bill_id
+       JOIN statements s ON s.id = li.statement_id JOIN locations l ON l.id = s.location_id
+     WHERE s.location_id = ? AND li.kind = 'utility'
+     ORDER BY s.month, b.issue_date, b.id`,
+    locationId,
+  );
+  const charges = computeCharges(
+    rows.map((r) => ({ key: accountKey(r), amount: r.amount ?? 0, lineAmount: r.line_amount, locked: r.st_status !== 'draft' })),
+  );
+  const updates = rows.flatMap((r, i) => {
+    const { charge, creditUsed } = charges[i]!;
+    if (r.st_status !== 'draft') return [];
+    const description = utilityLineDescription(r) + creditNote(r.amount ?? 0, charge, creditUsed, r.loc_currency);
+    if (charge === r.line_amount && description === r.line_description) return [];
+    return [db.prepare('UPDATE line_items SET amount = ?, description = ? WHERE id = ?').bind(charge, description, r.line_id)];
+  });
+  if (updates.length) await db.batch(updates);
 }
 
 /** Cron: create this month's draft for every location. */

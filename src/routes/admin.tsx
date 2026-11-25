@@ -18,7 +18,7 @@ import {
   tenantsOfLocation,
 } from '../db';
 import { minorToInput, parseAmount } from '../money';
-import { ensureStatement, pullBills } from '../statements';
+import { applyCredits, ensureStatement, pullBills } from '../statements';
 import {
   LINE_KIND_LABELS,
   RECURRING_KINDS,
@@ -262,15 +262,16 @@ admin.post('/statements/:id/lines', async (c) => {
 admin.post('/lines/:id/delete', async (c) => {
   const id = intParam(c, 'id');
   const line = id
-    ? await first<{ id: number; statement_id: number; status: string }>(
+    ? await first<{ id: number; statement_id: number; status: string; location_id: number }>(
         c.env.DB,
-        'SELECT li.id, li.statement_id, s.status FROM line_items li JOIN statements s ON s.id = li.statement_id WHERE li.id = ?',
+        'SELECT li.id, li.statement_id, s.status, s.location_id FROM line_items li JOIN statements s ON s.id = li.statement_id WHERE li.id = ?',
         id,
       )
     : null;
   if (!line) return notFound(c);
   if (line.status !== 'draft') return redirect(c, `/statements/${line.statement_id}`, { err: 'Csak piszkozat módosítható' });
   await run(c.env.DB, 'DELETE FROM line_items WHERE id = ?', line.id);
+  await applyCredits(c.env.DB, line.location_id);
   return redirect(c, `/statements/${line.statement_id}`, { ok: 'Tétel törölve (az eltávolított számla a következő elszámolásba újra bekerülhet)' });
 });
 
@@ -288,6 +289,7 @@ admin.post('/statements/:id/status', async (c) => {
         ? "UPDATE statements SET status = 'paid', paid_at = datetime('now') WHERE id = ?"
         : "UPDATE statements SET status = 'draft', sent_at = NULL, paid_at = NULL WHERE id = ?";
   await run(c.env.DB, sql, st.id);
+  if (to === 'draft') await applyCredits(c.env.DB, st.location_id);
   return redirect(c, `/statements/${st.id}`, { ok: `Elszámolás állapota: ${STATUS_LABELS[to] ?? to}` });
 });
 
@@ -296,6 +298,7 @@ admin.post('/statements/:id/delete', async (c) => {
   if (!st) return notFound(c);
   if (st.status !== 'draft') return redirect(c, `/statements/${st.id}`, { err: 'Csak piszkozat törölhető' });
   await run(c.env.DB, 'DELETE FROM statements WHERE id = ?', st.id);
+  await applyCredits(c.env.DB, st.location_id);
   return redirect(c, `/admin/locations/${st.location_id}`, { ok: `${st.month} piszkozat törölve` });
 });
 

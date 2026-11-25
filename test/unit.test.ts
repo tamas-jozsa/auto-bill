@@ -129,3 +129,20 @@ describe('email-only bills', async () => {
     expect([f.due_date, f.currency, f.amount]).toEqual(['2026-06-15', 'HUF', 605600]);
   });
 });
+
+describe('negative bills carry forward as credit', async () => {
+  const { computeCharges, creditNote } = await import('../src/statements');
+  const row = (amount: number, key = 'c:1', locked = false, lineAmount = amount) => ({ key, amount, lineAmount, locked });
+  const charges = (rows: ReturnType<typeof row>[]) => computeCharges(rows).map((r) => r.charge);
+  it('charges 0 for a credit and deducts it from the next bill', () => expect(charges([row(-3000), row(6056)])).toEqual([0, 3056]));
+  it('spreads a large credit over several bills', () => expect(charges([row(-10000), row(6000), row(6000), row(6000)])).toEqual([0, 0, 2000, 6000]));
+  it('keeps credits per account', () => expect(charges([row(-3000, 'c:1'), row(5000, 'c:2'), row(5000, 'c:1')])).toEqual([0, 5000, 2000]));
+  it('never changes sent statements but still tracks their credit', () =>
+    expect(charges([row(-3000, 'c:1', true, 0), row(5000)])).toEqual([0, 2000]));
+  it('treats an old refunded credit as settled', () => expect(charges([row(-3000, 'c:1', true, -3000), row(5000)])).toEqual([-3000, 5000]));
+  it('explains the deduction', () => {
+    expect(creditNote(-300000, 0, 0, 'HUF')).toContain('jóváírás');
+    expect(creditNote(605600, 305600, 300000, 'HUF')).toContain('levonva');
+    expect(creditNote(605600, 605600, 0, 'HUF')).toBe('');
+  });
+});
