@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { getBill, getLocation, listBills, listLocations, run, statementOfBill } from '../db';
 import { ingestPdf, readStoredEmail, reextractBill } from '../intake';
 import { minorToInput, parseAmount } from '../money';
-import { syncBillLine } from '../statements';
+import { applyCredits, syncBillLine } from '../statements';
 import { BILL_STATUSES, STATUS_LABELS, UTILITY_LABELS, UTILITY_TYPES, type AppEnv, type Bill } from '../types';
 import { Badge, Empty, Icon, KindIcon, Layout, Money, monthLabel, Options, PostButton, TableWrap } from '../ui/layout';
 import { isDate, normalizeContract, nullIfEmpty } from '../util';
@@ -311,6 +311,17 @@ adminBills.get('/:id', async (c) => {
               {(bill.pdf_key || bill.raw_email_key) && (
                 <PostButton action={`/admin/bills/${bill.id}/reextract`} label="Adatkinyerés újrafuttatása" confirm="Felülírja a mezőket egy új AI-feldolgozással?" />
               )}
+              {statement && statement.status !== 'draft' ? (
+                <span class="muted">Kiküldött elszámoláson szerepel, ezért nem törölhető (előbb állítsa vissza az elszámolást piszkozatra).</span>
+              ) : (
+                <PostButton
+                  action={`/admin/bills/${bill.id}/delete`}
+                  label="Számla végleges törlése"
+                  cls="danger"
+                  icon="trash"
+                  confirm={`Véglegesen törli a(z) #${bill.id} számlát a PDF-fel, igazolással és az eredeti e-maillel együtt?${statement ? ' A piszkozat elszámolásból is kikerül.' : ''} Ez nem vonható vissza.`}
+                />
+              )}
             </div>
             {extraction && (
               <details>
@@ -519,4 +530,29 @@ adminBills.post('/:id/pdf', async (c) => {
   await run(c.env.DB, "UPDATE bills SET pdf_key = ?, updated_at = datetime('now') WHERE id = ?", key, bill.id);
   if (bill.pdf_key) await c.env.FILES.delete(bill.pdf_key);
   return redirect(c, back, { ok: 'PDF csatolva' });
+});
+
+adminBills.post('/:id/delete', async (c) => {
+  const id = intParam(c, 'id');
+  const bill = id ? await getBill(c.env.DB, id) : null;
+  if (!bill) return notFound(c);
+  const statement = await statementOfBill(c.env.DB, bill.id);
+  if (statement && statement.status !== 'draft')
+    return redirect(c, `/admin/bills/${bill.id}`, { err: 'Kiküldött vagy fizetett elszámoláson szereplő számla nem törölhető' });
+
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM line_items WHERE bill_id = ?').bind(bill.id),
+    c.env.DB.prepare('DELETE FROM bills WHERE id = ?').bind(bill.id),
+  ]);
+  if (statement) await applyCredits(c.env.DB, statement.location_id);
+
+  // One e-mail can carry several PDFs (= several bills); keep the raw e-mail while others use it.
+  const keys = [bill.pdf_key, bill.proof_key];
+  if (bill.raw_email_key) {
+    const shared = await c.env.DB.prepare('SELECT 1 FROM bills WHERE raw_email_key = ? LIMIT 1').bind(bill.raw_email_key).first();
+    if (!shared) keys.push(bill.raw_email_key);
+  }
+  const toDelete = keys.filter((k): k is string => !!k);
+  if (toDelete.length) await c.env.FILES.delete(toDelete);
+  return redirect(c, '/admin/bills?status=all', { ok: `A(z) #${bill.id} számla törölve` });
 });
