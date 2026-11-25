@@ -115,3 +115,17 @@ describe('utilityLineDescription', () => {
     );
   });
 });
+
+describe('email-only bills', async () => {
+  const { emailBodyText, invoiceLinks } = await import('../src/intake');
+  const { normalizeExtraction } = await import('../src/extract');
+  const body = `Számla összege: 6056 Ft\n\n https://zafirportal.hu/e-invoice/31a4c40d-1eb1-457d-8bb7-26be58f9b615\n\nA portál elérhetősége: https://zafirportal.hu`;
+  it('keeps invoice links, drops bare portal links', () =>
+    expect(invoiceLinks(body)).toEqual(['https://zafirportal.hu/e-invoice/31a4c40d-1eb1-457d-8bb7-26be58f9b615']));
+  it('falls back to stripped HTML', () =>
+    expect(emailBodyText({ html: '<p>Összeg: <b>6056&nbsp;Ft</b></p><a href="https://x.hu/inv/1">link</a>' })).toContain('6056 Ft'));
+  it('normalizes Hungarian dates and Ft', () => {
+    const f = normalizeExtraction({ due_date: '2026.06.15.', currency: 'Ft', amount: 6056 });
+    expect([f.due_date, f.currency, f.amount]).toEqual(['2026-06-15', 'HUF', 605600]);
+  });
+});

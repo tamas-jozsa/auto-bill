@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { getBill, getLocation, listBills, listLocations, run, statementOfBill } from '../db';
-import { ingestPdf, reextractBill } from '../intake';
+import { ingestPdf, readStoredEmail, reextractBill } from '../intake';
 import { minorToInput, parseAmount } from '../money';
 import { syncBillLine } from '../statements';
 import { BILL_STATUSES, STATUS_LABELS, UTILITY_LABELS, UTILITY_TYPES, type AppEnv, type Bill } from '../types';
@@ -142,7 +142,11 @@ adminBills.get('/:id', async (c) => {
   const id = intParam(c, 'id');
   const bill = id ? await getBill(c.env.DB, id) : null;
   if (!bill) return notFound(c);
-  const [locations, statement] = await Promise.all([listLocations(c.env.DB), statementOfBill(c.env.DB, bill.id)]);
+  const [locations, statement, email] = await Promise.all([
+    listLocations(c.env.DB),
+    statementOfBill(c.env.DB, bill.id),
+    !bill.pdf_key && bill.raw_email_key ? readStoredEmail(c.env, bill.raw_email_key).catch(() => null) : null,
+  ]);
   const location = locations.find((l) => l.id === bill.location_id);
   const currencyMismatch = location && bill.currency && bill.currency !== location.currency;
   let extraction: string | null = null;
@@ -304,7 +308,7 @@ adminBills.get('/:id', async (c) => {
                   Eredeti e-mail letöltése
                 </a>
               )}
-              {bill.pdf_key && (
+              {(bill.pdf_key || bill.raw_email_key) && (
                 <PostButton action={`/admin/bills/${bill.id}/reextract`} label="Adatkinyerés újrafuttatása" confirm="Felülírja a mezőket egy új AI-feldolgozással?" />
               )}
             </div>
@@ -320,7 +324,35 @@ adminBills.get('/:id', async (c) => {
           {bill.pdf_key ? (
             <iframe class="pdf" src={`/files/bills/${bill.id}/pdf`} title="Számla PDF"></iframe>
           ) : (
-            <div class="card muted">Ehhez a számlához nincs PDF.</div>
+            <>
+              <form method="post" action={`/admin/bills/${bill.id}/pdf`} enctype="multipart/form-data" class="card">
+                <h3>
+                  <Icon name="file" size={16} /> Ehhez a számlához nincs PDF
+                </h3>
+                <p class="muted">Ha letöltötte a számlát a szolgáltató oldaláról, csatolja itt. A bérlő is látni fogja. A mezők nem változnak.</p>
+                <div class="row">
+                  <div>
+                    <input type="file" name="file" accept="application/pdf" required />
+                  </div>
+                  <div class="shrink">
+                    <button class="primary">
+                      <Icon name="upload" size={16} /> PDF csatolása
+                    </button>
+                  </div>
+                </div>
+              </form>
+              {email && (
+                <div class="card">
+                  <h3>
+                    <Icon name="inbox" size={16} /> Az e-mail szövege
+                  </h3>
+                  <div class="muted" style="margin-bottom:10px">
+                    {email.from} · {email.subject}
+                  </div>
+                  <pre style="white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.55 inherit;margin:0">{email.text.slice(0, 20000)}</pre>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -458,13 +490,33 @@ adminBills.post('/:id/payment', async (c) => {
 adminBills.post('/:id/reextract', async (c) => {
   const id = intParam(c, 'id');
   const bill = id ? await getBill(c.env.DB, id) : null;
-  if (!bill?.pdf_key) return notFound(c);
+  if (!bill || (!bill.pdf_key && !bill.raw_email_key)) return notFound(c);
   try {
-    await reextractBill(c.env, bill.id, bill.pdf_key);
+    await reextractBill(c.env, bill);
   } catch (err) {
     return redirect(c, `/admin/bills/${bill.id}`, { err: `Az adatkinyerés nem sikerült: ${String(err).slice(0, 200)}` });
   }
   const updated = await getBill(c.env.DB, bill.id);
   if (updated) await syncBillLine(c.env.DB, updated);
   return redirect(c, `/admin/bills/${bill.id}`, { ok: 'Mezők újra kinyerve — ellenőrizze őket.' });
+});
+
+adminBills.post('/:id/pdf', async (c) => {
+  const id = intParam(c, 'id');
+  const bill = id ? await getBill(c.env.DB, id) : null;
+  if (!bill) return notFound(c);
+  const back = `/admin/bills/${bill.id}`;
+  const pdf = file(await form(c), 'file');
+  if (!pdf) return redirect(c, back, { err: 'Válasszon PDF fájlt' });
+  if (pdf.size > MAX_UPLOAD) return redirect(c, back, { err: 'A fájl nagyobb 20 MB-nál' });
+  const bytes = await pdf.arrayBuffer();
+  if (new TextDecoder().decode(bytes.slice(0, 5)) !== '%PDF-') return redirect(c, back, { err: 'Ez nem PDF fájl' });
+  const key = `bills/${crypto.randomUUID()}.pdf`;
+  await c.env.FILES.put(key, bytes, {
+    httpMetadata: { contentType: 'application/pdf' },
+    customMetadata: { filename: (pdf.name || 'bill.pdf').slice(0, 200) },
+  });
+  await run(c.env.DB, "UPDATE bills SET pdf_key = ?, updated_at = datetime('now') WHERE id = ?", key, bill.id);
+  if (bill.pdf_key) await c.env.FILES.delete(bill.pdf_key);
+  return redirect(c, back, { ok: 'PDF csatolva' });
 });

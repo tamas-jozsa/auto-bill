@@ -46,12 +46,23 @@ export async function ingestPdf(env: Env, input: IngestInput): Promise<number> {
 }
 
 /** Re-run extraction on an existing bill and overwrite its fields (keeps status pending_review). */
-export async function reextractBill(env: Env, billId: number, pdfKey: string): Promise<void> {
-  const obj = await env.FILES.get(pdfKey);
-  if (!obj) throw new Error('PDF not found in R2');
-  const bytes = await obj.arrayBuffer();
-  const text = await pdfToText(env, obj.customMetadata?.filename ?? 'bill.pdf', bytes);
+export async function reextractBill(env: Env, bill: { id: number; pdf_key: string | null; raw_email_key: string | null }): Promise<void> {
+  let text: string;
+  let notesExtra: string[] = [];
+  if (bill.pdf_key) {
+    const obj = await env.FILES.get(bill.pdf_key);
+    if (!obj) throw new Error('PDF not found in R2');
+    text = await pdfToText(env, obj.customMetadata?.filename ?? 'bill.pdf', await obj.arrayBuffer());
+  } else if (bill.raw_email_key) {
+    const email = await readStoredEmail(env, bill.raw_email_key);
+    if (!email) throw new Error('Az eredeti e-mail nem található');
+    text = emailPrompt(email);
+    notesExtra = emailNotes(email);
+  } else {
+    throw new Error('Nincs PDF vagy e-mail, amiből adatot lehetne kinyerni');
+  }
   const { fields, raw } = await extractFields(env, text);
+  fields.notes = [fields.notes, ...notesExtra].filter(Boolean).join('\n') || null;
   const loc = await resolveLocation(env.DB, fields);
   await env.DB.prepare(
     `UPDATE bills SET contract_number = ?, utility_type = ?, provider = ?, invoice_number = ?, amount = ?,
@@ -73,7 +84,7 @@ export async function reextractBill(env: Env, billId: number, pdfKey: string): P
       fields.notes,
       loc.locationId,
       JSON.stringify({ model: env.AI_MODEL, raw }),
-      billId,
+      bill.id,
     )
     .run();
 }
@@ -144,6 +155,79 @@ async function insertBill(
   return row.id;
 }
 
+export interface EmailContent {
+  from: string | null;
+  subject: string | null;
+  text: string;
+}
+
+/** Plain text of an email; falls back to stripping the HTML part. */
+export function emailBodyText(parsed: { text?: string; html?: string }): string {
+  if (parsed.text?.trim()) return parsed.text.trim();
+  return (parsed.html ?? '')
+    .replace(/<(style|script)[\s\S]*?<\/\1>/gi, '')
+    .replace(/<br\s*\/?>|<\/(p|div|tr|li|h\d)>/gi, '\n')
+    .replace(/<a\s[^>]*href="([^"]+)"[^>]*>/gi, ' $1 ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*\n+/g, '\n\n')
+    .trim();
+}
+
+/** Links that look like a specific invoice (not just a portal home page). */
+export function invoiceLinks(text: string): string[] {
+  const urls = [...new Set(text.match(/https:\/\/[^\s<>"')\]]+/g) ?? [])].map((u) => u.replace(/[.,;]+$/, ''));
+  return urls.filter((u) => {
+    try {
+      const url = new URL(u);
+      return url.pathname.length > 1 && !/unsubscribe|leiratkoz|privacy|adatvedelem|facebook|instagram|google\.com/i.test(u);
+    } catch {
+      return false;
+    }
+  }).slice(0, 3);
+}
+
+const emailPrompt = (e: EmailContent) =>
+  `This is an e-mail notification about a bill (there is no PDF attached).\nFrom: ${e.from ?? ''}\nSubject: ${e.subject ?? ''}\n\n${e.text}`;
+
+const emailNotes = (e: EmailContent) => {
+  const links = invoiceLinks(e.text);
+  return ['Nem volt PDF csatolva — az adatok az e-mail szövegéből származnak.', ...links.map((l) => `Számla linkje: ${l}`)];
+};
+
+export async function readStoredEmail(env: Env, key: string): Promise<EmailContent | null> {
+  const obj = await env.FILES.get(key);
+  if (!obj) return null;
+  const parsed = await PostalMime.parse(await obj.arrayBuffer());
+  const from = parsed.from && 'address' in parsed.from ? (parsed.from.address ?? null) : null;
+  return { from, subject: parsed.subject ?? null, text: emailBodyText(parsed) };
+}
+
+/** Create a bill from an e-mail that has no PDF, extracting fields from the e-mail text. */
+async function ingestEmailText(env: Env, e: EmailContent, rawEmailKey: string): Promise<number> {
+  let fields: Extracted | null = null;
+  let extraction: string | null = null;
+  if (e.text.replace(/\s/g, '').length >= 50) {
+    try {
+      const result = await extractFields(env, emailPrompt(e));
+      fields = result.fields;
+      extraction = JSON.stringify({ model: env.AI_MODEL, source: 'email-text', raw: result.raw });
+    } catch (err) {
+      extraction = JSON.stringify({ model: env.AI_MODEL, source: 'email-text', error: String(err) });
+      console.error('email text extraction failed', err);
+    }
+  }
+  const notes = fields
+    ? [fields.notes, ...emailNotes(e)].filter(Boolean).join('\n')
+    : 'Az e-mailben nem volt PDF melléklet, és a szövegéből sem sikerült adatot kinyerni. Nézze meg az eredeti e-mailt, és töltse ki a mezőket vagy csatolja a PDF-et.';
+  return insertBill(env.DB, { source: 'email', fields, pdfKey: null, rawEmailKey, emailFrom: e.from, emailSubject: e.subject, extraction, notes });
+}
+
 function isPdfAttachment(a: { mimeType: string; filename: string | null }): boolean {
   return a.mimeType.toLowerCase() === 'application/pdf' || !!a.filename?.toLowerCase().endsWith('.pdf');
 }
@@ -190,16 +274,7 @@ export async function handleEmail(message: ForwardableEmailMessage, env: Env): P
   }
 
   if (pdfs.length === 0) {
-    await insertBill(env.DB, {
-      source: 'email',
-      fields: null,
-      pdfKey: null,
-      rawEmailKey,
-      emailFrom,
-      emailSubject,
-      extraction: null,
-      notes: 'Az e-mailben nem volt PDF melléklet (a számla lehet, hogy linken érhető el). Nézze meg az eredeti e-mailt, és töltse fel a PDF-et.',
-    });
+    await ingestEmailText(env, { from: emailFrom, subject: emailSubject, text: emailBodyText(parsed) }, rawEmailKey);
     return;
   }
 
