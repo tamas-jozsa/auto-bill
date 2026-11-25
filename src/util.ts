@@ -20,7 +20,8 @@ export function senderAllowed(allowlist: string | undefined, candidates: (string
   const entries = parseList(allowlist);
   if (entries.length === 0) return false;
   return candidates.some((raw) => {
-    const addr = raw?.trim().toLowerCase();
+    // Ignore "+tag" sub-addressing: Gmail auto-forwards from user+caf_=…@gmail.com.
+    const addr = raw?.trim().toLowerCase().replace(/\+[^@]*@/, '@');
     if (!addr || !addr.includes('@')) return false;
     const domain = addr.slice(addr.lastIndexOf('@'));
     return entries.some((e) => (e.startsWith('@') ? domain === e : addr === e));

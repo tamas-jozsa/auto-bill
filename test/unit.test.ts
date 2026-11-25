@@ -38,6 +38,8 @@ describe('senderAllowed', () => {
   it('matches exact addresses case-insensitively', () => expect(senderAllowed(list, ['Me@Gmail.com'])).toBe(true));
   it('matches domains', () => expect(senderAllowed(list, [null, 'faturas@epal.pt'])).toBe(true));
   it('does not match subdomain tricks', () => expect(senderAllowed(list, ['x@evil-epal.pt', 'me@gmail.com.evil.io'])).toBe(false));
+  it('ignores +tag sub-addressing (Gmail auto-forward)', () =>
+    expect(senderAllowed(list, ['me+caf_=bills=tamasjozsa.net@gmail.com', 'faturas@other.pt'])).toBe(true));
   it('rejects everything when empty', () => expect(senderAllowed('', ['me@gmail.com'])).toBe(false));
 });
 

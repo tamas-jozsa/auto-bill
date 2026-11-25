@@ -148,12 +148,15 @@ function isPdfAttachment(a: { mimeType: string; filename: string | null }): bool
   return a.mimeType.toLowerCase() === 'application/pdf' || !!a.filename?.toLowerCase().endsWith('.pdf');
 }
 
+const GMAIL_FORWARDING_SENDER = 'forwarding-noreply@google.com';
+
 export async function handleEmail(message: ForwardableEmailMessage, env: Env): Promise<void> {
   const raw = await new Response(message.raw).arrayBuffer();
   const parsed = await PostalMime.parse(raw);
   const headerFrom = parsed.from && 'address' in parsed.from ? parsed.from.address : undefined;
 
-  if (!senderAllowed(env.ALLOWED_SENDERS, [message.from, headerFrom])) {
+  const gmailConfirm = [message.from, headerFrom].some((a) => a?.toLowerCase() === GMAIL_FORWARDING_SENDER);
+  if (!gmailConfirm && !senderAllowed(env.ALLOWED_SENDERS, [message.from, headerFrom])) {
     console.warn('rejected email from', message.from, headerFrom);
     message.setReject('Sender not allowed');
     return;
@@ -165,6 +168,26 @@ export async function handleEmail(message: ForwardableEmailMessage, env: Env): P
   const emailFrom = headerFrom ?? message.from;
   const emailSubject = parsed.subject?.slice(0, 300) ?? null;
   const pdfs = parsed.attachments.filter(isPdfAttachment);
+
+  if (gmailConfirm) {
+    // Gmail's "verify forwarding address" mail: surface the code and link in the review queue.
+    const text = parsed.text ?? '';
+    const code = /(?:code|kód)\D{0,20}(\d{6,12})/i.exec(text)?.[1] ?? /#(\d{6,12})/.exec(emailSubject ?? '')?.[1];
+    const link = /https:\/\/mail[\w.-]*\.google\.com\/\S+/.exec(text)?.[0];
+    await insertBill(env.DB, {
+      source: 'email',
+      fields: null,
+      pdfKey: null,
+      rawEmailKey,
+      emailFrom,
+      emailSubject,
+      extraction: null,
+      notes: ['Gmail továbbítási megerősítés (nem számla — elutasítható).', code && `Megerősítő kód: ${code}`, link && `Link: ${link}`]
+        .filter(Boolean)
+        .join('\n'),
+    });
+    return;
+  }
 
   if (pdfs.length === 0) {
     await insertBill(env.DB, {
