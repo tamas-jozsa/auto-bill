@@ -29,6 +29,10 @@ export interface Location {
   name: string;
   address: string | null;
   currency: string;
+  /** Day of month (1-28) for the automatic statement; null = off. */
+  auto_day: number | null;
+  /** Last month (YYYY-MM) the automatic statement ran. */
+  auto_last_month: string | null;
   created_at: string;
 }
 

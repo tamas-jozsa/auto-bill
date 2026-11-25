@@ -146,3 +146,25 @@ describe('negative bills carry forward as credit', async () => {
     expect(creditNote(605600, 605600, 0, 'HUF')).toBe('');
   });
 });
+
+describe('automatic monthly statements', async () => {
+  const { autoDue, nextAutoRun, initialAutoLastMonth } = await import('../src/statements');
+  const d = (iso: string) => new Date(`${iso}T06:00:00Z`);
+  it('is off without a day', () => expect(autoDue({ auto_day: null, auto_last_month: null }, d('2026-11-10'))).toBe(false));
+  it('waits for the day', () => expect(autoDue({ auto_day: 15, auto_last_month: null }, d('2026-11-14'))).toBe(false));
+  it('runs on the day', () => expect(autoDue({ auto_day: 15, auto_last_month: '2026-10' }, d('2026-11-15'))).toBe(true));
+  it('catches up a missed day', () => expect(autoDue({ auto_day: 15, auto_last_month: '2026-10' }, d('2026-11-17'))).toBe(true));
+  it('runs once a month', () => expect(autoDue({ auto_day: 15, auto_last_month: '2026-11' }, d('2026-11-20'))).toBe(false));
+  it('enabling after the day starts next month', () => {
+    const last = initialAutoLastMonth(10, d('2026-11-25'), null);
+    expect(last).toBe('2026-11');
+    expect(autoDue({ auto_day: 10, auto_last_month: last }, d('2026-11-26'))).toBe(false);
+    expect(nextAutoRun({ auto_day: 10, auto_last_month: last }, d('2026-11-25'))).toBe('2026-12-10');
+  });
+  it('enabling before the day runs this month', () => {
+    const last = initialAutoLastMonth(28, d('2026-11-25'), '2026-10');
+    expect(last).toBe(null);
+    expect(nextAutoRun({ auto_day: 28, auto_last_month: last }, d('2026-11-25'))).toBe('2026-11-28');
+  });
+  it('rolls over the year', () => expect(nextAutoRun({ auto_day: 5, auto_last_month: '2026-12' }, d('2026-12-20'))).toBe('2027-01-05'));
+});

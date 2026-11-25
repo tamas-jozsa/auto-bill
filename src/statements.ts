@@ -155,13 +155,67 @@ export async function applyCredits(db: D1Database, locationId: number): Promise<
   if (updates.length) await db.batch(updates);
 }
 
-/** Cron: create this month's draft for every location. */
+/** Cron (10th): create this month's draft for every location without an automatic schedule. */
 export async function createMonthlyDrafts(db: D1Database, month: string): Promise<number> {
-  const locations = await all<{ id: number }>(db, 'SELECT id FROM locations');
+  const locations = await all<{ id: number }>(db, 'SELECT id FROM locations WHERE auto_day IS NULL');
   let created = 0;
   for (const l of locations) {
     const r = await ensureStatement(db, l.id, month);
     if (r.created) created++;
   }
   return created;
+}
+
+const pad = (n: number) => String(n).padStart(2, '0');
+
+/** True when the automatic statement for `today` (UTC) is due: day reached and not yet run this month. */
+export function autoDue(loc: { auto_day: number | null; auto_last_month: string | null }, today: Date): boolean {
+  if (!loc.auto_day) return false;
+  return today.getUTCDate() >= loc.auto_day && loc.auto_last_month !== currentMonthOf(today);
+}
+
+const currentMonthOf = (d: Date) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}`;
+
+/** Next run date (YYYY-MM-DD) for an enabled schedule. */
+export function nextAutoRun(loc: { auto_day: number | null; auto_last_month: string | null }, today: Date): string | null {
+  if (!loc.auto_day) return null;
+  const y = today.getUTCFullYear();
+  const m = today.getUTCMonth(); // 0-based
+  if (loc.auto_last_month === currentMonthOf(today)) {
+    const next = new Date(Date.UTC(y, m + 1, loc.auto_day));
+    return next.toISOString().slice(0, 10);
+  }
+  // Not run yet this month: on its day, or on the next cron run if the day already passed.
+  return new Date(Date.UTC(y, m, Math.max(loc.auto_day, today.getUTCDate()))).toISOString().slice(0, 10);
+}
+
+/**
+ * Month the schedule should treat as already done when it's (re)configured, so that turning it on
+ * after this month's day doesn't immediately send a statement.
+ */
+export function initialAutoLastMonth(day: number, today: Date, previous: string | null): string | null {
+  return today.getUTCDate() >= day ? currentMonthOf(today) : previous === currentMonthOf(today) ? previous : null;
+}
+
+/** Cron (daily): create and send the month's statement for every location whose day has come. */
+export async function runAutoStatements(db: D1Database, today: Date): Promise<{ sent: number; skipped: number }> {
+  const month = currentMonthOf(today);
+  const locations = await all<{ id: number; auto_day: number | null; auto_last_month: string | null }>(
+    db,
+    'SELECT id, auto_day, auto_last_month FROM locations WHERE auto_day IS NOT NULL',
+  );
+  let sent = 0;
+  let skipped = 0;
+  for (const loc of locations.filter((l) => autoDue(l, today))) {
+    const st = await ensureStatement(db, loc.id, month);
+    const lines = await first<{ n: number }>(db, 'SELECT count(*) AS n FROM line_items WHERE statement_id = ?', st.id);
+    if ((lines?.n ?? 0) > 0) {
+      const res = await run(db, "UPDATE statements SET status = 'sent', sent_at = datetime('now') WHERE id = ? AND status = 'draft'", st.id);
+      if (res.meta.changes) sent++;
+    } else {
+      skipped++; // nothing to bill: leave the empty draft for the admin
+    }
+    await run(db, 'UPDATE locations SET auto_last_month = ? WHERE id = ?', month, loc.id);
+  }
+  return { sent, skipped };
 }

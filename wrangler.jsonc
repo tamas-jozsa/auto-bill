@@ -20,7 +20,7 @@
   // Workers AI always runs remotely, also in `wrangler dev`.
   "ai": { "binding": "AI", "remote": true },
   // 06:00 UTC on the 10th of every month: create draft statements.
-  "triggers": { "crons": ["0 6 10 * *"] },
+  "triggers": { "crons": ["0 6 * * *"] },
   "vars": {
     "ADMIN_EMAILS": "jtomi92@gmail.com",
     "ALLOWED_SENDERS": "jtomi92@gmail.com,jozsakarolyne61@gmail.com",

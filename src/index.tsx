@@ -5,7 +5,7 @@ import { handleEmail } from './intake';
 import { admin } from './routes/admin';
 import { files } from './routes/files';
 import { tenant } from './routes/tenant';
-import { createMonthlyDrafts } from './statements';
+import { createMonthlyDrafts, runAutoStatements } from './statements';
 import type { AppEnv } from './types';
 import { currentMonth } from './util';
 
@@ -36,8 +36,13 @@ export default {
   },
 
   async scheduled(controller, env) {
-    const month = currentMonth(new Date(controller.scheduledTime));
-    const created = await createMonthlyDrafts(env.DB, month);
-    console.log(`created ${created} draft statement(s) for ${month}`);
+    const now = new Date(controller.scheduledTime);
+    const auto = await runAutoStatements(env.DB, now);
+    console.log(`automatic statements: ${auto.sent} sent, ${auto.skipped} empty`);
+    if (now.getUTCDate() === 10) {
+      const month = currentMonth(now);
+      const created = await createMonthlyDrafts(env.DB, month);
+      console.log(`created ${created} draft statement(s) for ${month}`);
+    }
   },
 } satisfies ExportedHandler<Env>;

@@ -18,7 +18,7 @@ import {
   tenantsOfLocation,
 } from '../db';
 import { minorToInput, parseAmount } from '../money';
-import { applyCredits, ensureStatement, pullBills } from '../statements';
+import { applyCredits, ensureStatement, initialAutoLastMonth, nextAutoRun, pullBills } from '../statements';
 import {
   LINE_KIND_LABELS,
   RECURRING_KINDS,
@@ -27,6 +27,7 @@ import {
   UTILITY_LABELS,
   UTILITY_TYPES,
   type AppEnv,
+  type Location,
   type User,
 } from '../types';
 import { Avatar, Empty, Icon, KindIcon, Layout, Money, monthLabel, Options, PostButton, TableWrap } from '../ui/layout';
@@ -316,6 +317,7 @@ admin.get('/locations', async (c) => {
             <th>Név</th>
             <th>Cím</th>
             <th>Pénznem</th>
+            <th>Automatikus elszámolás</th>
           </tr>
         </thead>
         <tbody>
@@ -333,6 +335,7 @@ admin.get('/locations', async (c) => {
               <td>
                 <span class="tag">{l.currency}</span>
               </td>
+              <td>{l.auto_day ? <span class="badge approved">minden hónap {l.auto_day}.</span> : <span class="muted">—</span>}</td>
             </tr>
           ))}
         </tbody>
@@ -592,6 +595,8 @@ admin.get('/locations/:id', async (c) => {
         </div>
       </div>
 
+      <AutoStatementForm location={location} base={base} />
+
       <h2>Számlák</h2>
       <BillTable bills={bills} />
 
@@ -604,6 +609,68 @@ admin.get('/locations/:id', async (c) => {
       </form>
     </Layout>,
   );
+});
+
+function AutoStatementForm(p: { location: Location; base: string }) {
+  const on = p.location.auto_day != null;
+  const next = nextAutoRun(p.location, new Date());
+  return (
+    <form method="post" action={`${p.base}/auto`} class="card">
+      <h2>
+        <Icon name="clock" /> Automatikus havi elszámolás
+        {on && <span class="badge approved">bekapcsolva</span>}
+      </h2>
+      <p class="muted">
+        A kiválasztott napon a rendszer elkészíti a hónap elszámolását (ismétlődő tételek és minden jóváhagyott számla), és kiküldöttnek jelöli,
+        így a bérlő azonnal látja. Az ellenőrzésre váró számlák a következő hónapba kerülnek.
+      </p>
+      <div class="row">
+        <div class="shrink">
+          <label>
+            <input type="checkbox" name="enabled" value="1" checked={on} /> Bekapcsolva
+          </label>
+        </div>
+        <div class="shrink" style="min-width:160px">
+          <label>A hónap napja</label>
+          <select name="day">
+            {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
+              <option value={String(d)} selected={d === (p.location.auto_day ?? 10)}>
+                {d}.
+              </option>
+            ))}
+          </select>
+        </div>
+        <div class="shrink">
+          <button class="primary">Mentés</button>
+        </div>
+      </div>
+      {on && next && (
+        <p class="muted" style="margin-bottom:0">
+          Következő automatikus elszámolás: <b>{next}</b>
+          {p.location.auto_last_month && ` · utoljára: ${monthLabel(p.location.auto_last_month)}`}
+        </p>
+      )}
+    </form>
+  );
+}
+
+admin.post('/locations/:id/auto', async (c) => {
+  const id = intParam(c, 'id');
+  const location = id ? await getLocation(c.env.DB, id) : null;
+  if (!location) return notFound(c);
+  const f = await form(c);
+  const back = `/admin/locations/${location.id}`;
+  if (!field(f, 'enabled')) {
+    await run(c.env.DB, 'UPDATE locations SET auto_day = NULL WHERE id = ?', location.id);
+    return redirect(c, back, { ok: 'Automatikus havi elszámolás kikapcsolva' });
+  }
+  const day = Number(field(f, 'day'));
+  if (!Number.isInteger(day) || day < 1 || day > 28) return redirect(c, back, { err: 'A nap 1 és 28 között lehet' });
+  const now = new Date();
+  const last = initialAutoLastMonth(day, now, location.auto_last_month);
+  await run(c.env.DB, 'UPDATE locations SET auto_day = ?, auto_last_month = ? WHERE id = ?', day, last, location.id);
+  const next = nextAutoRun({ auto_day: day, auto_last_month: last }, now);
+  return redirect(c, back, { ok: `Automatikus havi elszámolás: minden hónap ${day}. napján. Következő: ${next}` });
 });
 
 admin.post('/locations/:id', async (c) => {
