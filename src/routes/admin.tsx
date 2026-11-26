@@ -11,6 +11,7 @@ import {
   listBills,
   listLocations,
   listRecentStatements,
+  listStatements,
   listStatementsOfLocation,
   listUsers,
   recurringOfLocation,
@@ -23,6 +24,7 @@ import {
   LINE_KIND_LABELS,
   RECURRING_KINDS,
   ROLE_LABELS,
+  STATEMENT_STATUSES,
   STATUS_LABELS,
   UTILITY_LABELS,
   UTILITY_TYPES,
@@ -103,7 +105,7 @@ admin.get('/', async (c) => {
             <div class="val">{unbilled?.n ?? 0}</div>
           </span>
         </a>
-        <div class="stat">
+        <a class="stat" href="/admin/statements?status=sent">
           <span class="ico">
             <Icon name="send" size={22} />
           </span>
@@ -111,7 +113,7 @@ admin.get('/', async (c) => {
             <div class="lbl">Kiküldve, fizetésre vár</div>
             <div class="val">{awaiting?.n ?? 0}</div>
           </span>
-        </div>
+        </a>
         <a class="stat ok" href="/admin/users">
           <span class="ico">
             <Icon name="users" size={22} />
@@ -177,6 +179,38 @@ admin.get('/', async (c) => {
       )}
       <h2>Legutóbbi elszámolások</h2>
       <StatementTable rows={statements} showLocation />
+    </Layout>,
+  );
+});
+
+// --- statements list ---------------------------------------------------------
+
+admin.get('/statements', async (c) => {
+  const q = c.req.query('status') ?? 'sent';
+  const status = (STATEMENT_STATUSES as readonly string[]).includes(q) ? q : 'all';
+  const rows = await listStatements(c.env.DB, status === 'all' ? undefined : status);
+  return c.html(
+    <Layout title="Elszámolások" user={c.get('user')} flash={flash(c)}>
+      <a class="back" href="/admin">
+        <Icon name="arrowLeft" size={16} /> Áttekintés
+      </a>
+      <div class="page-head">
+        <h1>Elszámolások</h1>
+      </div>
+      <nav class="seg" style="margin-bottom:18px">
+        {[...STATEMENT_STATUSES, 'all'].map((s) => (
+          <a href={`/admin/statements?status=${s}`} aria-current={s === status ? 'page' : undefined}>
+            {s === 'all' ? 'Összes' : s === 'sent' ? 'Fizetésre vár' : STATUS_LABELS[s]}
+          </a>
+        ))}
+      </nav>
+      {rows.length === 0 ? (
+        <div class="card">
+          <Empty icon="send" title={status === 'sent' ? 'Nincs fizetésre váró elszámolás' : 'Nincs ilyen elszámolás'} />
+        </div>
+      ) : (
+        <StatementTable rows={rows} showLocation />
+      )}
     </Layout>,
   );
 });

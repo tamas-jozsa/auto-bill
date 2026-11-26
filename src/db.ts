@@ -126,6 +126,11 @@ export const listStatementsOfLocation = (db: D1Database, locationId: number, inc
 export const listRecentStatements = (db: D1Database, limit = 10) =>
   all<StatementRow>(db, `${STATEMENT_ROW_SQL} ORDER BY s.month DESC, l.name LIMIT ?`, limit);
 
+export const listStatements = (db: D1Database, status?: string) =>
+  status
+    ? all<StatementRow>(db, `${STATEMENT_ROW_SQL} WHERE s.status = ? ORDER BY s.month DESC, l.name`, status)
+    : all<StatementRow>(db, `${STATEMENT_ROW_SQL} ORDER BY s.month DESC, l.name`);
+
 export const getStatementRow = (db: D1Database, id: number) =>
   first<StatementRow>(db, `${STATEMENT_ROW_SQL} WHERE s.id = ?`, id);
 
