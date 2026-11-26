@@ -1,4 +1,6 @@
-# auto-bill
+# Rezsiradar
+
+Utility bill intake and monthly tenant statements. Infrastructure names (Worker, D1, R2) remain `auto-bill`.
 
 Utility bill intake + monthly tenant statements on a single Cloudflare Worker.
 See [spec.md](spec.md) for the what and why.

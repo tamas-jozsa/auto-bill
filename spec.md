@@ -1,4 +1,4 @@
-# auto-bill — spec
+# Rezsiradar (auto-bill) — spec
 
 ## Problem
 

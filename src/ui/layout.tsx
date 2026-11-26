@@ -346,7 +346,7 @@ export function Layout(props: {
         <meta name="theme-color" content="#0b0d13" media="(prefers-color-scheme: dark)" />
         <meta name="color-scheme" content="light dark" />
         <link rel="icon" href={FAVICON} />
-        <title>{props.title} · auto-bill</title>
+        <title>{props.title} · Rezsiradar</title>
         <script dangerouslySetInnerHTML={{ __html: HEAD_SCRIPT }} />
         <style dangerouslySetInnerHTML={{ __html: CSS }} />
       </head>
@@ -372,7 +372,7 @@ export function Layout(props: {
               <span class="logo">
                 <Icon name="receipt" />
               </span>
-              <span class="name">auto-bill</span>
+              <span class="name">Rezsiradar</span>
             </a>
             <nav>
               {admin ? (
@@ -411,7 +411,7 @@ export function Layout(props: {
           {props.children}
         </main>
         <footer class="site">
-          <Icon name="receipt" size={14} /> auto-bill · rezsi és bérleti elszámolások
+          <Icon name="receipt" size={14} /> Rezsiradar · rezsi és bérleti elszámolások
         </footer>
       </body>
     </html>
